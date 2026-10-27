@@ -1,0 +1,88 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in backend/.env}"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  chromadb:
+    image: chromadb/chroma:0.5.23
+    environment:
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /chroma/chroma
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes:
+      - chromadb-data:/chroma/chroma
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/v1/heartbeat || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  echomind:
+    build:
+      context: ./backend
+      target: production
+    env_file:
+      - ./backend/.env
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
+      CHROMA_PERSIST_DIRECTORY: /app/data/chroma
+      EVAL_BASELINE_PATH: /app/data/eval/baseline.json
+      ECHOMIND_SKILLS_DIR: /app/skills
+    ports:
+      - "127.0.0.1:${ECHOMIND_API_HOST_PORT:-8000}:8000"
+    volumes:
+      - app-data:/app/data
+      - ./backend/skills:/app/skills:ro
+      - ./backend/config/mcp_servers.json:/app/config/mcp_servers.json:ro
+      - app-logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      PYTHON_API_URL: /api/python
+    ports:
+      - "127.0.0.1:${ECHOMIND_WEB_HOST_PORT:-5174}:80"
+    depends_on:
+      echomind:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=200h
+    volumes:
+      - ./backend/config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${ECHOMIND_PROM_HOST_PORT:-9090}:9090"
+
+volumes:
+  app-data:
+  app-logs:
+  redis-data:
+  chromadb-data:
+  prometheus-data:
