@@ -11,13 +11,14 @@ const DEFAULT_BACKENDS = {
 export function createInitialSettings() {
   const saved = readSettings()
   const savedLocale = saved.locale === 'zh-CN' || saved.locale === 'en' ? saved.locale : null
+  const hasLegacySettings = !savedLocale && Object.keys(saved).length > 0
   return {
     pythonToken: '',
     backend: 'python',
     userId: saved.userId || 'u1001',
-    // 没有保存过语言的旧设置按新访客处理：默认英文并开始新会话，避免旧中文历史驱动英文回复。
-    conversationId: savedLocale ? (saved.conversationId || '') : '',
-    locale: savedLocale || 'en',
+    // Existing settings predate locale and represent a Chinese session; new visitors start in English.
+    conversationId: saved.conversationId || '',
+    locale: savedLocale || (hasLegacySettings ? 'zh-CN' : 'en'),
     endpoints: {
       python: saved.endpoints?.python || DEFAULT_BACKENDS.python.baseUrl
     }
@@ -62,6 +63,14 @@ export function evaluationTaskKey(type, settings) {
 
 export async function runEvaluation(type, settings, body = null, options = {}) {
   const taskKey = evaluationTaskKey(type, settings)
+  const legacyTaskKey = `echomind.eval:${type}:${backendMeta(type, settings).baseUrl}:${settings.userId}`
+  if (settingsLocale(settings) === 'zh-CN' && !sessionStorage.getItem(taskKey)) {
+    const legacyJob = sessionStorage.getItem(legacyTaskKey)
+    if (legacyJob) {
+      sessionStorage.setItem(taskKey, legacyJob)
+      sessionStorage.removeItem(legacyTaskKey)
+    }
+  }
   const savedJob = sessionStorage.getItem(taskKey)
   const initial = savedJob ? {job_id: savedJob, status: 'queued', completed: 0, total: 0} : await requestFor(type, settings, '/eval/run', {
     method: 'POST',

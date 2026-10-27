@@ -287,7 +287,7 @@ class BaseAgent:
             self.stats.record(complete, ms, req.request_id)
             self.stats.success += int(complete)
             self.stats.total_ms += ms
-            escalate = self._needs_escalation(call_result.content)
+            escalate = self._needs_escalation(call_result.content, locale)
             return AgentResponse(
                 agent_type=self.agent_type,
                 content=call_result.content,
@@ -504,7 +504,7 @@ class BaseAgent:
         )
         base_prompt = f"{self.system_prompt}{profile_prompt}"
         if self._skill_manager is not None:
-            skill_prompt = self._skill_manager.prompt_for(req.message, self.agent_type.value)
+            skill_prompt = self._skill_manager.prompt_for(req.message, self.agent_type.value, locale=locale)
             if skill_prompt:
                 base_prompt = f"{base_prompt}\n\n[动态 Skills]\n{skill_prompt}"
         if locale == "en":
@@ -528,10 +528,11 @@ class BaseAgent:
         }
         return json.dumps(packet, ensure_ascii=False)
 
-    def _needs_escalation(self, content: str) -> bool:
+    def _needs_escalation(self, content: str, locale: str = DEFAULT_LOCALE) -> bool:
         """检测 Agent 是否建议升级（简单关键词检测）。"""
-        keywords = ["转人工", "人工客服", "escalate", "specialist", "无法处理",
-                    "human agent", "hand off", "transfer to a human", "cannot handle"]
+        keywords = ["转人工", "人工客服", "escalate", "specialist", "无法处理"]
+        if locale == "en":
+            keywords += ["human agent", "hand off", "transfer to a human", "cannot handle"]
         return any(kw in content for kw in keywords)
 
 
@@ -727,27 +728,39 @@ class ResponseComposer:
             f"[{response.agent_type.value} Agent 输出]\n{response.content}"
             for response in successful
         )
-        output_language = pick(locale, "英语", "中文")
-        prompt = (
-            "你是客服 Response Composer，负责把多个专业 Agent 的结果合并成一条最终回复。\n"
-            "要求：以主 Agent 的结论为主，按用户问题优先级组织内容；去掉重复和冲突表述；"
-            "不能补造订单、退款、后台查询结果；如果结论冲突，明确说明需要核验；"
-            "保留必要的排查步骤、核验字段和升级边界。不要提及 Agent。\n\n"
-            "默认正文约 300–500 个中文字符（英语约 180–320 词），分清各问题的结论和下一步，"
-            "不重复展开背景说明；用户要求详细时再展开。\n"
-            f"主 Agent：{successful[0].agent_type.value}\n"
-            f"用户问题：{req.message}\n"
-            f"候选结果：\n{evidence}"
-        )
+        if locale == "en":
+            prompt = (
+                "你是客服 Response Composer，负责把多个专业 Agent 的结果合并成一条最终回复。\n"
+                "要求：以主 Agent 的结论为主，按用户问题优先级组织内容；去掉重复和冲突表述；"
+                "不能补造订单、退款、后台查询结果；如果结论冲突，明确说明需要核验；"
+                "保留必要的排查步骤、核验字段和升级边界。不要提及 Agent。\n\n"
+                "默认正文约 300–500 个中文字符（英语约 180–320 词），分清各问题的结论和下一步，"
+                "不重复展开背景说明；用户要求详细时再展开。\n"
+                f"主 Agent：{successful[0].agent_type.value}\n"
+                f"用户问题：{req.message}\n"
+                f"候选结果：\n{evidence}"
+            )
+        else:
+            prompt = (
+                "你是客服 Response Composer，负责把多个专业 Agent 的结果合并成一条最终回复。\n"
+                "要求：以主 Agent 的结论为主，按用户问题优先级组织内容；去掉重复和冲突表述；"
+                "不能补造订单、退款、后台查询结果；如果结论冲突，明确说明需要核验；"
+                "保留必要的排查步骤、核验字段和升级边界。只输出给用户看的中文回复，不要提及 Agent。\n\n"
+                "默认正文约 300–500 个中文字符，分清各问题的结论和下一步，不重复展开背景说明；用户要求详细时再展开。\n"
+                f"主 Agent：{successful[0].agent_type.value}\n"
+                f"用户问题：{req.message}\n"
+                f"候选结果：\n{evidence}"
+            )
         if self._skill_manager is not None:
-            skill = self._skill_manager.prompt_for(req.message, "general")
+            skill = self._skill_manager.prompt_for(req.message, "general", locale=locale)
             if skill:
                 prompt += f"\n\n[通用客服输出边界]\n{skill}"
-        # 语言约束放在中文 Skills 之后，作为模型看到的最后一段指令。
-        prompt += (
-            f"\n\n[输出语言要求]\n只输出给用户看的{output_language}回复，不要提及 Agent；"
-            "保持上述中文业务规则、证据边界和升级条件不变。"
-        )
+        if locale == "en":
+            # Only English adds a final language instruction; Chinese keeps its original prompt.
+            prompt += (
+                "\n\n[输出语言要求]\n只输出给用户看的英语回复，不要提及 Agent；"
+                "保持上述中文业务规则、证据边界和升级条件不变。"
+            )
         try:
             response = await asyncio.wait_for(create_message(self._client,
                 stage="composer",
@@ -1168,12 +1181,13 @@ class AgentOrchestrator:
         ):
             scores[AgentType.BILLING] += 0.75
 
-        technical_kws = ["崩溃", "报错", "error", "crash", "无法登录", "登录失败", "500", "401", "验证码",
-                         "login", "sign in", "authentication", "token"]
-        billing_kws = ["退款", "退货", "扣款", "发票", "账单", "支付", "订阅", "refund", "invoice", "多扣",
-                       "charge", "charged", "billing", "payment", "subscription", "duplicate"]
-        general_kws = ["订单", "物流", "快递", "配送", "会员", "积分", "咨询", "帮助",
-                       "order", "delivery", "shipping", "membership", "points", "help"]
+        technical_kws = ["崩溃", "报错", "error", "crash", "无法登录", "登录失败", "500", "401", "验证码"]
+        billing_kws = ["退款", "退货", "扣款", "发票", "账单", "支付", "订阅", "refund", "invoice", "多扣"]
+        general_kws = ["订单", "物流", "快递", "配送", "会员", "积分", "咨询", "帮助"]
+        if req.locale == "en":
+            technical_kws += ["login", "sign in", "authentication", "token"]
+            billing_kws += ["charge", "charged", "billing", "payment", "subscription", "duplicate"]
+            general_kws += ["order", "delivery", "shipping", "membership", "points", "help"]
 
         technical_hits = sum(1 for kw in technical_kws if kw in msg)
         billing_hits = sum(1 for kw in billing_kws if kw in msg)
@@ -1206,13 +1220,9 @@ class AgentOrchestrator:
         )
         support_text = ", ".join(agent.value for agent in supporting_agents) or "none"
         intent = req.intent.value if req.intent else "unknown"
-        prefix = pick(req.locale, "intent", "意图")
-        group_label = pick(req.locale, "group", "分组")
-        primary_label = pick(req.locale, "primary", "主")
-        support_label = pick(req.locale, "supporting", "辅助")
         return (
-            f"{prefix}={intent}, {group_label}={req.intent_group or 'unknown'}, "
-            f"{primary_label}={primary_agent.value}, {support_label}={support_text}, scores=[{score_text}]"
+            f"intent={intent}, group={req.intent_group or 'unknown'}, "
+            f"primary={primary_agent.value}, supporting={support_text}, scores=[{score_text}]"
         )
 
     def _collaboration_targets(self, req: Request) -> List[AgentType]:
@@ -1225,10 +1235,11 @@ class AgentOrchestrator:
         msg = req.message.lower()
         targets: List[AgentType] = []
 
-        technical_kws = ["崩溃", "报错", "error", "crash", "无法登录", "登录失败", "500", "401",
-                         "login", "sign in", "authentication", "token"]
-        billing_kws = ["退款", "扣款", "发票", "账单", "支付", "订阅", "refund", "invoice",
-                       "charge", "charged", "billing", "payment", "subscription", "duplicate"]
+        technical_kws = ["崩溃", "报错", "error", "crash", "无法登录", "登录失败", "500", "401"]
+        billing_kws = ["退款", "扣款", "发票", "账单", "支付", "订阅", "refund", "invoice"]
+        if req.locale == "en":
+            technical_kws += ["login", "sign in", "authentication", "token"]
+            billing_kws += ["charge", "charged", "billing", "payment", "subscription", "duplicate"]
 
         if req.intent in (
             IntentCategory.TECHNICAL,

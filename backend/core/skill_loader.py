@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from core.locales import DEFAULT_LOCALE
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +22,12 @@ class Skill:
     content: str
     path: str
     keywords: List[str] = field(default_factory=list)
+    keywords_en: List[str] = field(default_factory=list)
     agents: List[str] = field(default_factory=list)
     enabled: bool = True
 
-    def matches(self, message: str, agent_type: Optional[str] = None) -> bool:
+    def matches(self, message: str, agent_type: Optional[str] = None,
+                locale: str = DEFAULT_LOCALE) -> bool:
         """
         判断当前请求是否应该注入这个 Skill。
 
@@ -37,11 +40,12 @@ class Skill:
         if self.agents and agent_type and agent_type.lower() not in self.agents:
             return False
 
-        if not self.keywords:
+        keywords = self.keywords + (self.keywords_en if locale == "en" else [])
+        if not keywords:
             return True
 
         lowered = (message or "").lower()
-        return any(keyword.lower() in lowered for keyword in self.keywords)
+        return any(keyword.lower() in lowered for keyword in keywords)
 
     def to_prompt_block(self, max_chars: int = 3200) -> str:
         """格式化为可直接拼入 system prompt 的文本块，并限制单个 Skill 长度。"""
@@ -58,6 +62,7 @@ class Skill:
             "description": self.description,
             "path": self.path,
             "keywords": self.keywords,
+            "keywords_en": self.keywords_en,
             "agents": self.agents,
             "enabled": self.enabled,
             "content_chars": len(self.content),
@@ -119,7 +124,8 @@ class SkillManager:
         """运行时热加载入口，供 API 调用。"""
         return self.load()
 
-    def prompt_for(self, message: str, agent_type: Optional[str] = None) -> str:
+    def prompt_for(self, message: str, agent_type: Optional[str] = None,
+                   locale: str = DEFAULT_LOCALE) -> str:
         """
         为当前用户请求构建 Skill prompt。
 
@@ -131,10 +137,11 @@ class SkillManager:
         lowered_message = (message or "").lower()
 
         for skill in self._skills:
-            if not skill.matches(message, agent_type):
+            if not skill.matches(message, agent_type, locale):
                 continue
+            active_keywords = skill.keywords + (skill.keywords_en if locale == "en" else [])
             matched_keywords = [
-                keyword for keyword in skill.keywords
+                keyword for keyword in active_keywords
                 if keyword.lower() in lowered_message
             ]
             block = skill.to_prompt_block()
@@ -247,6 +254,7 @@ class SkillManager:
             content=content,
             path=str(path),
             keywords=self._as_list(raw.get("keywords")),
+            keywords_en=self._as_list(raw.get("keywords_en")),
             agents=[item.lower() for item in self._as_list(raw.get("agents"))],
             enabled=self._as_bool(raw.get("enabled"), default=True),
         )
@@ -270,6 +278,7 @@ class SkillManager:
             content=body,
             path=str(path),
             keywords=self._as_list(meta.get("keywords")),
+            keywords_en=self._as_list(meta.get("keywords_en")),
             agents=[item.lower() for item in self._as_list(meta.get("agents"))],
             enabled=self._as_bool(meta.get("enabled"), default=True),
         )

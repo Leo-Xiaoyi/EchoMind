@@ -43,11 +43,11 @@ def test_locale_values_default_and_reject_unsupported_values():
 
 def test_english_pattern_and_entity_extraction():
     recognizer = IntentRecognizer.__new__(IntentRecognizer)
-    assert recognizer._pattern_recognize("I keep getting a 401 when I log in")["intent"] is IntentCategory.TECHNICAL_LOGIN
-    assert recognizer._pattern_recognize("I was charged twice this month")["intent"] is IntentCategory.PAYMENT_ISSUE
-    assert recognizer._pattern_recognize("Please transfer me to a human agent")["intent"] is IntentCategory.HUMAN_HANDOFF
-    assert recognizer._pattern_recognize("Please issue an invoice for me")["intent"] is IntentCategory.INVOICE
-    entities = recognizer._extract_entities("My order #12345 was charged $99.50 today with error 401")
+    assert recognizer._pattern_recognize("I keep getting a 401 when I log in", "en")["intent"] is IntentCategory.TECHNICAL_LOGIN
+    assert recognizer._pattern_recognize("I was charged twice this month", "en")["intent"] is IntentCategory.PAYMENT_ISSUE
+    assert recognizer._pattern_recognize("Please transfer me to a human agent", "en")["intent"] is IntentCategory.HUMAN_HANDOFF
+    assert recognizer._pattern_recognize("Please issue an invoice for me", "en")["intent"] is IntentCategory.INVOICE
+    entities = recognizer._extract_entities("My order #12345 was charged $99.50 today with error 401", "en")
     assert entities["order_id"] == ["12345"]
     assert entities["error_code"] == ["401"]
     assert entities["amount"] and entities["amount"][0].startswith("$")
@@ -56,30 +56,41 @@ def test_english_pattern_and_entity_extraction():
 
 def test_english_order_id_extraction_does_not_capture_ordinary_words():
     recognizer = IntentRecognizer.__new__(IntentRecognizer)
-    assert recognizer._extract_entities("My order number is 12345")["order_id"] == ["12345"]
-    assert recognizer._extract_entities("My order is 12345")["order_id"] == ["12345"]
-    assert recognizer._extract_entities("My order is ABC-123")["order_id"] == ["ABC-123"]
-    assert recognizer._extract_entities("I placed an order yesterday")["order_id"] == []
-    assert recognizer._extract_entities("order status")["order_id"] == []
-    assert recognizer._extract_entities("order number is pending")["order_id"] == []
-    assert recognizer._extract_entities("order no. ABC123")["order_id"] == ["ABC123"]
-    assert recognizer._extract_entities("border 12345")["order_id"] == []
-    assert recognizer._extract_entities("recorder 12345")["order_id"] == []
-    http_code = recognizer._extract_entities("order 500 error")
+    assert recognizer._extract_entities("My order number is 12345", "en")["order_id"] == ["12345"]
+    assert recognizer._extract_entities("My order is 12345", "en")["order_id"] == ["12345"]
+    assert recognizer._extract_entities("My order is ABC-123", "en")["order_id"] == ["ABC-123"]
+    assert recognizer._extract_entities("I placed an order yesterday", "en")["order_id"] == []
+    assert recognizer._extract_entities("order status", "en")["order_id"] == []
+    assert recognizer._extract_entities("order number is pending", "en")["order_id"] == []
+    assert recognizer._extract_entities("order no. ABC123", "en")["order_id"] == ["ABC123"]
+    assert recognizer._extract_entities("border 12345", "en")["order_id"] == []
+    assert recognizer._extract_entities("recorder 12345", "en")["order_id"] == []
+    http_code = recognizer._extract_entities("order 500 error", "en")
     assert http_code["order_id"] == []
     assert http_code["error_code"] == ["500"]
-    assert recognizer._extract_entities("订单号是 12345")["order_id"] == ["12345"]
-    assert recognizer._extract_entities("订单状态")["order_id"] == []
+    assert recognizer._extract_entities("订单号是 12345", "en")["order_id"] == ["12345"]
+    assert recognizer._extract_entities("订单状态", "en")["order_id"] == []
 
 
 def test_english_inflected_forms_reach_pattern_fallback():
     recognizer = IntentRecognizer.__new__(IntentRecognizer)
-    assert recognizer._pattern_recognize("The app keeps crashing")["intent"] is IntentCategory.TECHNICAL_CRASH
-    assert recognizer._pattern_recognize("I returned the item and want a refund")["intent"] is IntentCategory.REFUND
-    assert recognizer._pattern_recognize("Please cancel my order")["intent"] is IntentCategory.REQUEST
-    assert recognizer._pattern_recognize("My order is delayed")["intent"] is IntentCategory.LOGISTICS
-    assert recognizer._pattern_recognize("I am locked out of my account")["intent"] is IntentCategory.TECHNICAL_LOGIN
-    assert recognizer._pattern_recognize("My account was compromised")["intent"] is IntentCategory.ACCOUNT_SECURITY
+    assert recognizer._pattern_recognize("The app keeps crashing", "en")["intent"] is IntentCategory.TECHNICAL_CRASH
+    assert recognizer._pattern_recognize("I returned the item and want a refund", "en")["intent"] is IntentCategory.REFUND
+    assert recognizer._pattern_recognize("Please cancel my order", "en")["intent"] is IntentCategory.REQUEST
+    assert recognizer._pattern_recognize("My order is delayed", "en")["intent"] is IntentCategory.LOGISTICS
+    assert recognizer._pattern_recognize("I am locked out of my account", "en")["intent"] is IntentCategory.TECHNICAL_LOGIN
+    assert recognizer._pattern_recognize("My account was compromised", "en")["intent"] is IntentCategory.ACCOUNT_SECURITY
+
+
+def test_chinese_rule_path_preserves_legacy_entities_and_mixed_text_routing():
+    recognizer = IntentRecognizer.__new__(IntentRecognizer)
+    assert recognizer._extract_entities("请查订单号ABCD的物流")["order_id"] == ["ABCD"]
+    assert recognizer._extract_entities("我的order_id:12345什么时候到")["order_id"] == ["12345"]
+    assert recognizer._extract_entities("订单号A123-BC4需要退款")["order_id"] == ["A123-BC4"]
+    assert recognizer._pattern_recognize("我的账户 token 无法使用")["intent"] is IntentCategory.ACCOUNT
+    assert recognizer._pattern_recognize("我需要客服 human agent")["intent"] is IntentCategory.REQUEST
+    assert recognizer._urgency("请今天处理退款", IntentCategory.REFUND) is UrgencyLevel.HIGH
+    assert recognizer._urgency("我的订单 today 到吗", IntentCategory.QUERY) is UrgencyLevel.LOW
 
 
 def test_english_intent_prompt_uses_english_examples_without_guessing_from_text():
@@ -111,7 +122,7 @@ def test_agent_keeps_chinese_rules_and_adds_english_output_requirement():
 
 
 class FakeSkillManager:
-    def prompt_for(self, message, agent_type):
+    def prompt_for(self, message, agent_type, locale="zh-CN"):
         return "### 中文技能\n不得承诺退款。"
 
 
@@ -123,6 +134,18 @@ def test_agent_language_requirement_is_appended_after_skills():
     assert prompt.rstrip().endswith("不要篡改证据。")
     zh = agent._build_system_prompt(Request("登录失败 401", "u", "c", locale="zh-CN"))
     assert "输出语言要求" not in zh
+
+
+def test_chinese_skill_and_escalation_rules_ignore_english_only_terms():
+    root = Path(__file__).parent.parent / "skills"
+    manager = SkillManager(str(root))
+    manager.load()
+    assert manager.prompt_for("我的账户 charge 有问题", "billing", locale="zh-CN") == ""
+    assert "账单退款处理规范" in manager.prompt_for(
+        "我的账户 charge 有问题", "billing", locale="en")
+    agent = GeneralAgent(SimpleNamespace(), "test-model")
+    assert not agent._needs_escalation("human agent 是一种客服称呼。", "zh-CN")
+    assert agent._needs_escalation("human agent can take over.", "en")
 
 
 def test_composer_language_requirement_is_appended_after_skills():
@@ -146,6 +169,47 @@ def test_composer_language_requirement_is_appended_after_skills():
     assert result.content == "English reply"
     assert captured[0].index("[通用客服输出边界]") < captured[0].index("[输出语言要求]")
     assert "英语回复" in captured[0]
+
+
+def test_chinese_composer_keeps_original_output_instruction_and_length():
+    captured = []
+
+    class Client:
+        async def create(self, **kwargs):
+            captured.append(kwargs["messages"][0]["content"])
+            return SimpleNamespace(content=[{"type": "text", "text": "已处理"}])
+
+        def __init__(self):
+            self.messages = SimpleNamespace(create=self.create)
+
+    composer = ResponseComposer(Client(), "test-model", FakeSkillManager())
+    req = Request("登录失败，还被重复扣款", "u", "c", locale="zh-CN")
+    responses = [AgentResponse(AgentType.BILLING, "先核验账单。", True),
+                 AgentResponse(AgentType.TECHNICAL, "检查登录态。", True)]
+    asyncio.run(composer.compose_result(req, responses))
+    assert "保留必要的排查步骤、核验字段和升级边界。只输出给用户看的中文回复，不要提及 Agent。" in captured[0]
+    assert "默认正文约 300–500 个中文字符，分清各问题的结论和下一步" in captured[0]
+    assert "[输出语言要求]" not in captured[0]
+
+
+def test_chinese_mixed_terms_do_not_add_supporting_agents():
+    orchestrator = AgentOrchestrator.__new__(AgentOrchestrator)
+    orchestrator._pool = {
+        AgentType.GENERAL: [object()],
+        AgentType.BILLING: [object()],
+        AgentType.TECHNICAL: [object()],
+    }
+    orchestrator._monitor_degraded = lambda agent: False
+    for message, intent, expected in (
+        ("我的账户 token 无法使用", IntentCategory.ACCOUNT, AgentType.BILLING),
+        ("订单 payment 状态在哪里", IntentCategory.ORDER_STATUS, AgentType.GENERAL),
+    ):
+        decision = orchestrator._route_decision(Request(
+            message, "u", "c", intent=intent, urgency=UrgencyLevel.LOW,
+            intent_confidence=.8, locale="zh-CN"))
+        assert decision.primary_agent is expected
+        assert decision.supporting_agents == []
+        assert decision.reason.startswith("intent=")
 
 
 def test_english_agent_scaffolding_acks_are_english():
@@ -226,8 +290,8 @@ def test_english_messages_trigger_the_existing_chinese_skills():
     manager = SkillManager(str(root))
     manager.load()
     assert manager.errors == []
-    technical = manager.prompt_for("I keep getting 401 and cannot log in", "technical")
-    billing = manager.prompt_for("I was charged twice, please refund me", "billing")
+    technical = manager.prompt_for("I keep getting 401 and cannot log in", "technical", locale="en")
+    billing = manager.prompt_for("I was charged twice, please refund me", "billing", locale="en")
     assert "技术支持处理规范" in technical and "研发" not in technical
     assert "账单退款处理规范" in billing
     assert "Technical Support Guidelines" not in technical

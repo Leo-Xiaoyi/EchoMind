@@ -376,7 +376,7 @@
               </div>
               <div v-for="result in (evalData.results || []).filter(item => item.metadata?.judge_failed)" :key="result.test_id" class="evaluation-warning">
                 <strong class="danger">{{ t('evaluation.judgeFailed', { id: result.test_id }) }}</strong>
-                <p>{{ result.metadata.judge_error || t('evaluation.noScore') }}</p>
+                <p>{{ result.metadata.judge_error || t('evaluation.judgeNoScore') }}</p>
                 <small>{{ result.metadata.judge_attempts == null ? '—' : attemptsLabel(result.metadata.judge_attempts) }}</small>
               </div>
             </section>

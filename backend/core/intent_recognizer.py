@@ -149,9 +149,14 @@ _INTENT_GROUPS: Dict[IntentCategory, IntentCategory] = {
 
 # 紧急关键词
 _URGENCY_KEYWORDS = {
-    UrgencyLevel.CRITICAL: ["紧急", "emergency", "urgent", "asap", "立刻", "immediately"],
-    UrgencyLevel.HIGH:     ["今天", "马上", "尽快", "hurry", "now", "right away", "today"],
-    UrgencyLevel.MEDIUM:   ["这周", "soon", "快点", "this week"],
+    UrgencyLevel.CRITICAL: ["紧急", "emergency", "urgent", "asap", "立刻"],
+    UrgencyLevel.HIGH:     ["今天", "马上", "尽快", "hurry", "now"],
+    UrgencyLevel.MEDIUM:   ["这周", "soon", "快点"],
+}
+_URGENCY_KEYWORDS_EN = {
+    UrgencyLevel.CRITICAL: ["immediately"],
+    UrgencyLevel.HIGH: ["right away", "today"],
+    UrgencyLevel.MEDIUM: ["this week"],
 }
 
 
@@ -221,7 +226,7 @@ class IntentRecognizer:
         # LLM 和向量分支并行；provider=local 仍参与向量投票。
         llm_task = asyncio.create_task(self._llm_recognize(message, history, locale))
         emb_task = asyncio.create_task(self._embedding_recognize(message, locale)) if self._embedding_enabled else None
-        pat      = self._pattern_recognize(message)
+        pat      = self._pattern_recognize(message, locale)
 
         if emb_task:
             llm, emb = await asyncio.gather(llm_task, emb_task)
@@ -230,8 +235,8 @@ class IntentRecognizer:
             emb = {"intent": IntentCategory.OTHER, "confidence": 0.0, "source": "disabled"}
 
         intent, confidence, source_scores = self._vote(llm, emb, pat)
-        entities = self._extract_entities(message)
-        urgency  = self._urgency(message, intent)
+        entities = self._extract_entities(message, locale)
+        urgency  = self._urgency(message, intent, locale)
 
         result = IntentResult(
             intent=intent,
@@ -388,36 +393,62 @@ Available intents: {", ".join(c.value for c in IntentCategory)}"""
             logger.warning(f"Embedding 识别失败: {ex}")
             return {"intent": IntentCategory.OTHER, "confidence": 0.0, "source": "unavailable"}
 
-    def _pattern_recognize(self, message: str) -> Dict[str, Any]:
+    def _pattern_recognize(self, message: str, locale: str = DEFAULT_LOCALE) -> Dict[str, Any]:
         """策略 3：关键词模式匹配（同步，零延迟兜底）。"""
         msg = message.lower()
         specific_patterns = {
-            IntentCategory.HUMAN_HANDOFF: ["转人工", "人工客服", "找人工", "human agent", "real person", "representative", "human support"],
-            IntentCategory.ORDER_STATUS: ["订单状态", "发货了吗", "处理到哪", "order status", "where is my order", "has my order shipped", "shipped yet"],
-            IntentCategory.LOGISTICS: ["物流", "快递", "配送", "运单", "delivery", "shipping", "tracking", "courier", "delayed", "late"],
-            IntentCategory.REFUND: ["退款", "退货", "refund", "return", "refunded", "refunding", "returned", "returning", "money back"],
-            IntentCategory.INVOICE: ["发票", "抬头", "税号", "invoice", "invoices", "receipt", "tax id"],
-            IntentCategory.PAYMENT_ISSUE: ["重复扣款", "多扣", "支付失败", "扣费", "payment failed", "charged twice", "double charge", "duplicate charge", "overcharged", "charged", "charging"],
-            IntentCategory.ACCOUNT_SECURITY: ["被盗", "异常登录", "重置密码", "两步验证", "安全", "hacked", "unauthorized login", "reset password", "two-factor", "2fa", "security", "compromised"],
-            IntentCategory.TECHNICAL_LOGIN: ["无法登录", "登录失败", "401", "验证码", "cannot log in", "can't log in", "login failed", "verification code", "sign in", "locked out", "cannot sign in", "can't sign in"],
-            IntentCategory.TECHNICAL_CRASH: ["崩溃", "闪退", "500", "报错", "crash", "crashes", "crashing", "crashed", "500 error"],
+            IntentCategory.HUMAN_HANDOFF: ["转人工", "人工客服", "找人工"],
+            IntentCategory.ORDER_STATUS: ["订单状态", "发货了吗", "处理到哪", "order status"],
+            IntentCategory.LOGISTICS: ["物流", "快递", "配送", "运单", "delivery", "shipping"],
+            IntentCategory.REFUND: ["退款", "退货", "refund", "return"],
+            IntentCategory.INVOICE: ["发票", "抬头", "税号", "invoice"],
+            IntentCategory.PAYMENT_ISSUE: ["重复扣款", "多扣", "支付失败", "扣费", "payment failed"],
+            IntentCategory.ACCOUNT_SECURITY: ["被盗", "异常登录", "重置密码", "两步验证", "安全"],
+            IntentCategory.TECHNICAL_LOGIN: ["无法登录", "登录失败", "401", "验证码"],
+            IntentCategory.TECHNICAL_CRASH: ["崩溃", "闪退", "500", "报错", "crash"],
         }
         generic_patterns = {
-            IntentCategory.ESCALATION: ["投诉", "经理", "supervisor", "manager", "complain", "complaint", "complaining", "escalate"],
-            IntentCategory.COMPLAINT:  ["太差", "糟糕", "horrible", "等了很久", "terrible", "awful", "worst", "waited hours"],
-            IntentCategory.QUERY:      ["?", "？", "怎么", "什么", "status", "how", "what", "when", "where is", "how long"],
-            IntentCategory.REQUEST:    ["帮我", "需要", "please", "help", "help me", "i need", "cancel", "cancelled", "canceled", "cancelling", "canceling"],
-            IntentCategory.GREETING:   ["你好", "嗨", "hello", "hi", "good morning"],
-            IntentCategory.BILLING:    ["退款", "扣款", "发票", "refund", "billing", "charge", "charges", "invoices"],
-            IntentCategory.TECHNICAL:  ["崩溃", "报错", "error", "crash", "bug", "not working", "failing", "broken"],
-            IntentCategory.ACCOUNT:    ["密码", "邮箱", "账户", "password", "email", "account", "profile"],
+            IntentCategory.ESCALATION: ["投诉", "经理", "supervisor"],
+            IntentCategory.COMPLAINT:  ["太差", "糟糕", "horrible", "等了很久"],
+            IntentCategory.QUERY:      ["?", "？", "怎么", "什么", "status"],
+            IntentCategory.REQUEST:    ["帮我", "需要", "please", "help"],
+            IntentCategory.GREETING:   ["你好", "嗨", "hello", "hi"],
+            IntentCategory.BILLING:    ["退款", "扣款", "发票", "refund"],
+            IntentCategory.TECHNICAL:  ["崩溃", "报错", "error", "crash"],
+            IntentCategory.ACCOUNT:    ["密码", "邮箱", "账户", "password"],
         }
+        if locale == "en":
+            extra_specific = {
+                IntentCategory.HUMAN_HANDOFF: ["human agent", "real person", "representative", "human support"],
+                IntentCategory.ORDER_STATUS: ["where is my order", "has my order shipped", "shipped yet"],
+                IntentCategory.LOGISTICS: ["tracking", "courier", "delayed", "late"],
+                IntentCategory.REFUND: ["refunded", "refunding", "returned", "returning", "money back"],
+                IntentCategory.INVOICE: ["invoices", "receipt", "tax id"],
+                IntentCategory.PAYMENT_ISSUE: ["charged twice", "double charge", "duplicate charge", "overcharged", "charged", "charging"],
+                IntentCategory.ACCOUNT_SECURITY: ["hacked", "unauthorized login", "reset password", "two-factor", "2fa", "security", "compromised"],
+                IntentCategory.TECHNICAL_LOGIN: ["cannot log in", "can't log in", "login failed", "verification code", "sign in", "locked out", "cannot sign in", "can't sign in"],
+                IntentCategory.TECHNICAL_CRASH: ["crashes", "crashing", "crashed", "500 error"],
+            }
+            extra_generic = {
+                IntentCategory.ESCALATION: ["manager", "complain", "complaint", "complaining", "escalate"],
+                IntentCategory.COMPLAINT: ["terrible", "awful", "worst", "waited hours"],
+                IntentCategory.QUERY: ["how", "what", "when", "where is", "how long"],
+                IntentCategory.REQUEST: ["help me", "i need", "cancel", "cancelled", "canceled", "cancelling", "canceling"],
+                IntentCategory.GREETING: ["good morning"],
+                IntentCategory.BILLING: ["billing", "charge", "charges", "invoices"],
+                IntentCategory.TECHNICAL: ["bug", "not working", "failing", "broken"],
+                IntentCategory.ACCOUNT: ["email", "account", "profile"],
+            }
+            for category, keywords in extra_specific.items():
+                specific_patterns[category].extend(keywords)
+            for category, keywords in extra_generic.items():
+                generic_patterns[category].extend(keywords)
 
-        best_cat, best_score = self._best_pattern_match(msg, specific_patterns)
+        best_cat, best_score = self._best_pattern_match(msg, specific_patterns, locale)
         if best_cat != IntentCategory.OTHER:
             return {"intent": best_cat, "confidence": best_score}
 
-        best_cat, best_score = self._best_pattern_match(msg, generic_patterns)
+        best_cat, best_score = self._best_pattern_match(msg, generic_patterns, locale)
         return {"intent": best_cat, "confidence": best_score}
 
     # ── 投票合并 ──────────────────────────────────────────────────────────────
@@ -476,9 +507,21 @@ Available intents: {", ".join(c.value for c in IntentCategory)}"""
 
     # ── 实体提取 ──────────────────────────────────────────────────────────────
 
-    def _extract_entities(self, message: str) -> Dict[str, List[str]]:
+    def _extract_entities(self, message: str, locale: str = DEFAULT_LOCALE) -> Dict[str, List[str]]:
         """用规则提取高价值实体，避免每次识别都额外调用 LLM。"""
         message = self._clean_text(message)
+        if locale != "en":
+            # Keep the original Chinese path, including alphabetic IDs and order_id labels.
+            return {
+                "order_id": self._unique(re.findall(r"(?:订单号?|order(?:_id)?|#)\s*[:：#]?\s*([A-Za-z0-9_-]{4,32})", message, re.I)),
+                "product": [],
+                "date": self._unique(re.findall(r"(今天|明天|昨天|本周|这周|下周|\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)", message)),
+                "amount": self._unique(re.findall(r"((?:¥|￥)\s*\d+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?\s*(?:元|块|rmb|cny|usd|美元))", message, re.I)),
+                "error_code": self._unique(
+                    re.findall(r"(?:error(?:_code)?|错误码|状态码|http)\s*[:：#]?\s*([45]\d{2})\b", message, re.I)
+                    + re.findall(r"\b([45]\d{2})\b", message)
+                ),
+            }
         order_ids: List[str] = []
         for pattern in (
             # Explicit hash form: #12345 / #ABC-123.
@@ -536,11 +579,12 @@ Available intents: {", ".join(c.value for c in IntentCategory)}"""
             vec[idx] += sign
         return vec
 
-    def _urgency(self, message: str, intent: IntentCategory) -> UrgencyLevel:
+    def _urgency(self, message: str, intent: IntentCategory, locale: str = DEFAULT_LOCALE) -> UrgencyLevel:
         msg = message.lower()
         msg = re.sub(r"(?:不(?:是|用|需要)?|无需|无须|非|并不|没那么|暂不)\s*(?:紧急|立刻|马上|尽快|快点)", "", msg)
         msg = re.sub(r"\b(?:not|isn't|is not|no)\s+(?:an?\s+)?(?:emergency|urgent|asap|now)\b", "", msg)
-        for level, kws in _URGENCY_KEYWORDS.items():
+        for level, base_keywords in _URGENCY_KEYWORDS.items():
+            kws = base_keywords + (_URGENCY_KEYWORDS_EN[level] if locale == "en" else [])
             if any(re.search(rf"(?<![a-z]){re.escape(kw)}(?![a-z])", msg) if kw.isascii() else kw in msg for kw in kws):
                 return level
         if intent in (IntentCategory.ESCALATION, IntentCategory.HUMAN_HANDOFF):
@@ -575,12 +619,14 @@ Available intents: {", ".join(c.value for c in IntentCategory)}"""
     def _best_pattern_match(
         message: str,
         patterns: Dict[IntentCategory, List[str]],
+        locale: str = DEFAULT_LOCALE,
     ) -> tuple[IntentCategory, float]:
         best_cat, best_score = IntentCategory.OTHER, 0.0
         for cat, kws in patterns.items():
             hits = sum(1 for kw in kws if (
-                re.search(rf"(?<![a-z]){re.escape(kw)}(?![a-z])", message)
-                if kw.isascii() else kw in message
+                (re.search(rf"(?<![a-z]){re.escape(kw)}(?![a-z])", message)
+                 if kw.isascii() else kw in message)
+                if locale == "en" else kw in message
             ))
             if not hits:
                 continue
