@@ -191,6 +191,7 @@ def build_shared_rag_tools(tool_manager: Any) -> Dict[str, AgentToolSpec]:
             "knowledge_search",
             query,
             top_k=top_k,
+            locale=getattr(req, "locale", "zh-CN"),
         )
         if not getattr(result, "success", False):
             return {

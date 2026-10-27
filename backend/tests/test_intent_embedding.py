@@ -3,7 +3,7 @@ import time
 import httpx
 import pytest
 from core.intent_embedding import IntentEmbedding
-from core.intent_recognizer import IntentRecognizer
+from core.intent_recognizer import IntentCategory, IntentRecognizer
 
 
 def provider(monkeypatch):
@@ -36,6 +36,62 @@ def test_online_batches_caches_templates_and_preserves_space(monkeypatch):
         assert len(calls)==4 and calls[-1]==['second']
         assert all(len(v)==3 for v in groups['a'])
     asyncio.run(run())
+
+
+def test_template_cache_keeps_multiple_locale_fingerprints(monkeypatch):
+    async def run():
+        client = provider(monkeypatch)
+        calls = []
+
+        async def request(http, texts):
+            calls.append(texts)
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+        client._request = request
+        english = {'a': ['en one']}
+        chinese = {'a': ['zh one']}
+        await client.vectors('hello', english, local)
+        await client.vectors('你好', chinese, local)
+        assert len(calls) == 4  # two template batches + two query vectors
+        await client.vectors('hello again', english, local)
+        assert len(calls) == 5 and calls[-1] == ['hello again']
+        assert len(client.remote_templates) == 2
+
+        for index in range(6):
+            await client.vectors(f'q{index}', {f'group{index}': [f't{index}']}, local)
+        assert len(client.remote_templates) == client.MAX_TEMPLATE_CACHES
+
+    asyncio.run(run())
+
+
+def test_local_template_cache_keeps_fingerprints_and_learn_clears_it(monkeypatch):
+    monkeypatch.setenv('INTENT_EMBEDDING_PROVIDER', 'local')
+    monkeypatch.setenv('SILICONFLOW_API_KEY', '')
+    client = IntentEmbedding()
+    calls = []
+
+    def local_count(text):
+        calls.append(text)
+        return [1.0, 0.0]
+
+    async def run():
+        await client.vectors('hello', {'a': ['en']}, local_count)
+        await client.vectors('你好', {'a': ['zh']}, local_count)
+        assert len(client.local_templates) == 2
+        before = len(calls)
+        await client.vectors('hello again', {'a': ['en']}, local_count)
+        assert len(calls) == before + 1
+
+    asyncio.run(run())
+
+    recognizer = IntentRecognizer.__new__(IntentRecognizer)
+    recognizer._embedding = client
+    recognizer._cache = {'old': object()}
+    recognizer._cache_expiries = {'old': time.monotonic() + 60}
+    recognizer.learn('I need a refund', IntentCategory.REFUND)
+    assert client.local_templates == {}
+    assert client.remote_templates == {}
+    assert recognizer._cache == {}
 
 
 def test_query_failure_falls_back_with_local_templates_and_cooldown(monkeypatch):

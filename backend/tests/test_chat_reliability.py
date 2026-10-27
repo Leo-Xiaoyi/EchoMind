@@ -56,7 +56,7 @@ async def services(monkeypatch):
     orch._recent_tool_traces = deque(maxlen=200)
     recognizer = IntentRecognizer.__new__(IntentRecognizer)
 
-    async def recognize(message, history=None):
+    async def recognize(message, history=None, locale=None):
         return IntentResult(IntentCategory.REFUND, .95, UrgencyLevel.LOW, "billing",
                             recognizer._extract_entities(message), "test", 0)
 
@@ -330,3 +330,99 @@ async def test_http_timing_includes_memory_commit_and_metrics_work_without_extra
     histogram.observe(3000)
     assert next(s.value for s in histogram.collect()[0].samples
                 if s.name.endswith("_bucket") and s.labels["le"] == "3000.0") == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_locale_is_per_request_and_receipts_cannot_cross_locales(services):
+    memory, orch, client, http = services
+    english = {**body(request_id="locale-en"), "locale": "en"}
+    first = await http.post("/chat", json=english)
+    assert first.status_code == 200
+    assert first.json()["locale"] == "en"
+    assert orch.recognize_intent.await_args.kwargs["locale"] == "en"
+
+    repeat = await http.post("/chat", json=english)
+    assert repeat.status_code == 200 and repeat.json() == first.json()
+
+    conflict = await http.post("/chat", json={**english, "locale": "zh-CN"})
+    assert conflict.status_code == 409
+
+    invalid = await http.post("/chat", json={**english, "locale": "fr"})
+    assert invalid.status_code == 400
+
+    chinese = {**body(message="退款规则", request_id="locale-zh"), "locale": "zh-CN"}
+    zh_first = await http.post("/chat", json=chinese)
+    assert zh_first.status_code == 200
+    assert zh_first.json()["locale"] == "zh-CN"
+    assert orch.recognize_intent.await_args.kwargs["locale"] == "zh-CN"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_english_and_chinese_requests_keep_their_locale(services):
+    memory, orch, client, http = services
+    english = {**body(message="I want a refund", request_id="parallel-en", conv_id="c-en"), "locale": "en"}
+    chinese = {**body(message="我想退款", request_id="parallel-zh", conv_id="c-zh"), "locale": "zh-CN"}
+    en_response, zh_response = await asyncio.gather(
+        http.post("/chat", json=english),
+        http.post("/chat", json=chinese),
+    )
+    assert en_response.status_code == zh_response.status_code == 200
+    assert en_response.json()["locale"] == "en"
+    assert zh_response.json()["locale"] == "zh-CN"
+    seen = {call.kwargs["locale"] for call in orch.recognize_intent.await_args_list}
+    assert seen == {"en", "zh-CN"}
+
+
+@pytest.mark.asyncio
+async def test_english_unsafe_tool_marker_is_english(services):
+    memory, orch, model, http = services
+
+    async def write(req, args):
+        marker = await memory.get_turn_receipt("u", "c", "en-unsafe")
+        assert marker["locale"] == "en"
+        assert "Verify the result" in marker["response"]["response"]
+        assert not marker["response"]["retryable"]
+        return {"success": True}
+
+    orch.set_shared_tools({"write": AgentToolSpec("write", "test", {"type": "object"}, write, retry_safe=False)})
+    model.messages.create.side_effect = [
+        SimpleNamespace(content=[{"type": "tool_use", "id": "w", "name": "write", "input": {}}]),
+        RuntimeError("lost model response"), RuntimeError("fallback down"),
+    ]
+    response = await http.post("/chat", json={**body(request_id="en-unsafe"), "locale": "en"})
+    assert response.status_code == 503 and not response.json()["retryable"]
+
+
+@pytest.mark.asyncio
+async def test_english_timeout_message_is_english(services, monkeypatch):
+    memory, orch, model, http = services
+
+    async def stall(**kwargs):
+        await asyncio.Event().wait()
+
+    model.messages.create.side_effect = stall
+    original_timeout = asyncio.timeout
+    monkeypatch.setattr(api.asyncio, "timeout", lambda seconds: original_timeout(.2))
+    response = await http.post("/chat", json={**body(request_id="timeout-en"), "locale": "en"})
+    assert response.status_code == 504
+    assert "exceeded 50 seconds" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_receipt_without_locale_is_treated_as_chinese(services):
+    memory, orch, model, http = services
+    legacy = {
+        "message": "退款规则",
+        "response": {
+            "conv_id": "c", "request_id": "legacy", "response": "旧回复",
+            "intent": "refund", "agent_type": "billing", "escalated": False,
+            "latency_ms": 1.0, "status": "success", "retryable": False,
+        },
+    }
+    await memory._redis.set(memory.receipt_key("u", "c", "one"), json.dumps(legacy))
+    response = await http.post("/chat", json=body())
+    assert response.status_code == 200
+    assert response.json()["response"] == "旧回复"
+    assert response.json()["locale"] == "zh-CN"
+    conflict = await http.post("/chat", json={**body(), "locale": "en"})
+    assert conflict.status_code == 409

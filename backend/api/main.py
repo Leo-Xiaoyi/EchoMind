@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 from core.performance import collect_performance, measure_stage, performance_snapshot
+from core.locales import DEFAULT_LOCALE, LocaleError, normalize_locale, pick
 
 load_dotenv(pathlib.Path(_ROOT) / '.env')
 
@@ -279,11 +280,17 @@ class ChatRequest(BaseModel):
     client_request_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     user_id:     str = "anonymous"
     conv_id:     Optional[str] = None
+    locale:      Optional[str] = Field(
+        default=None,
+        description="Response locale: 'en' or 'zh-CN'. Defaults to 'zh-CN' for backward compatibility. "
+                    "Stable machine fields are not translated; user-uploaded or external MCP text is preserved.",
+    )
 
 
 class ChatResponse(BaseModel):
     conv_id:     str
     request_id:  str = ""
+    locale:      str = DEFAULT_LOCALE
     response:    str
     intent:      str
     intent_group: str = "other"
@@ -318,6 +325,14 @@ class RecentToolTracesResponse(BaseModel):
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
+def _locale(value: Optional[str]) -> str:
+    """把可选 locale 转为受支持值；非法值返回明确的 400。"""
+    try:
+        return normalize_locale(value)
+    except LocaleError as ex:
+        raise HTTPException(400, str(ex)) from ex
+
+
 @app.get("/health")
 async def health():
     if _orchestrator is None:
@@ -349,9 +364,13 @@ async def chat(req: ChatRequest, http_request: HTTPRequest):
     """
     主对话接口。完整流程：
       记忆读取 → 意图识别 → Agent 路由 → 执行 → 记忆写入
+
+    `locale` 可选 `en` 或 `zh-CN`，缺省 `zh-CN`（兼容旧客户端）。语言只影响
+    系统生成的回复、提示与说明，不翻译用户原文或外部 MCP 证据。
     """
+    locale = _locale(req.locale)
     if _orchestrator is None or _memory is None:
-        raise HTTPException(503, "服务未就绪")
+        raise HTTPException(503, pick(locale, "Service is not ready", "服务未就绪"))
 
     account = getattr(http_request.state, "account", None)
     if account:
@@ -374,7 +393,15 @@ async def chat(req: ChatRequest, http_request: HTTPRequest):
             receipt = await _memory.get_turn_receipt(req.user_id, conv_id, client_id)
             if receipt:
                 if receipt["message"] != req.message:
-                    raise HTTPException(409, "同一 client_request_id 不能用于不同消息")
+                    raise HTTPException(409, pick(
+                        locale,
+                        "The same client_request_id cannot be used for a different message",
+                        "同一 client_request_id 不能用于不同消息"))
+                if (receipt.get("locale") or receipt["response"].get("locale") or DEFAULT_LOCALE) != locale:
+                    raise HTTPException(409, pick(
+                        locale,
+                        "The same client_request_id cannot be reused across locales; use a new request ID",
+                        "同一 client_request_id 不能跨语言复用；请使用新的请求 ID"))
                 previous = ChatResponse(**receipt["response"])
                 if previous.status != "failed" or not previous.retryable:
                     return render(previous)
@@ -389,7 +416,7 @@ async def chat(req: ChatRequest, http_request: HTTPRequest):
             ] if mem_ctx.recent_messages else None
 
             with measure_stage("intent"):
-                intent_result = await _orchestrator.recognize_intent(req.message, history=history)
+                intent_result = await _orchestrator.recognize_intent(req.message, history=history, locale=locale)
             full_context = mem_ctx.to_prompt_text()
 
             orch_req = OrcReq(
@@ -404,16 +431,20 @@ async def chat(req: ChatRequest, http_request: HTTPRequest):
                 urgency=intent_result.urgency,
                 intent_confidence=intent_result.confidence,
                 conversation_state=getattr(mem_ctx, "state", {}),
+                locale=locale,
             )
 
             async def before_unsafe_tool(name):
                 # 在产生副作用之前持久化；超时/崩溃后同一 ID 不会重放未知结果。
-                marker = ChatResponse(conv_id=conv_id, request_id=orch_req.request_id,
-                    response="该请求涉及可能修改数据的工具，请先核验执行结果再发起新的请求。",
+                marker = ChatResponse(conv_id=conv_id, request_id=orch_req.request_id, locale=locale,
+                    response=pick(locale,
+                                  "This request uses a tool that may change data. Verify the result before sending a new request.",
+                                  "该请求涉及可能修改数据的工具，请先核验执行结果再发起新的请求。"),
                     intent=intent_result.intent.value, agent_type="unknown", escalated=False,
                     latency_ms=(time.monotonic() - started) * 1000,
                     status="failed", retryable=False, error_code="tool_outcome_unknown")
-                await _memory.commit_turn(req.user_id, conv_id, client_id, req.message, marker.model_dump())
+                await _memory.commit_turn(req.user_id, conv_id, client_id, req.message,
+                                          marker.model_dump(), locale=locale)
             orch_req.before_unsafe_tool = before_unsafe_tool
 
             # 3. 执行
@@ -423,6 +454,7 @@ async def chat(req: ChatRequest, http_request: HTTPRequest):
             response = ChatResponse(
                 conv_id=conv_id,
                 request_id=result.request_id,
+                locale=locale,
                 response=result.response,
                 intent=result.intent.value if result.intent else "other",
                 intent_group=intent_result.intent_group,
@@ -446,22 +478,33 @@ async def chat(req: ChatRequest, http_request: HTTPRequest):
                 performance=performance_snapshot(),
             )
             await _memory.commit_turn(req.user_id, conv_id, client_id, req.message, response.model_dump(),
-                                      _orchestrator.get_tool_trace(result.request_id), state=orch_req.conversation_state)
+                                      _orchestrator.get_tool_trace(result.request_id), state=orch_req.conversation_state,
+                                      locale=locale)
             if response.status != "failed" and _profile_updater is not None:
                 _profile_updater.submit(req.user_id, conv_id)
             return render(response)
     except TimeoutError as ex:
-        raise HTTPException(504, "本轮处理超过 50 秒，请使用相同 client_request_id 重试") from ex
+        raise HTTPException(504, pick(
+            locale,
+            "This request exceeded 50 seconds; retry with the same client_request_id",
+            "本轮处理超过 50 秒，请使用相同 client_request_id 重试")) from ex
     except (ConversationBusyError, LeaseLostError) as ex:
-        raise HTTPException(503, str(ex)) from ex
+        raise HTTPException(503, pick(
+            locale,
+            "The conversation is busy; please retry later",
+            "当前会话正在处理其他请求，请稍后重试")) from ex
 
 
 @app.get("/monitor")
-async def monitor_summary():
-    """实时监控摘要：Agent 成功率、工具统计、告警、优化建议。"""
+async def monitor_summary(locale: str = Query(default=DEFAULT_LOCALE)):
+    """实时监控摘要：Agent 成功率、工具统计、告警、优化建议。
+
+    `locale` 缺省为 `zh-CN`；阈值、Prometheus 指标名和数值语义不随语言变化。
+    """
+    locale_value = _locale(locale)
     if _monitor is None:
-        raise HTTPException(503, "服务未就绪")
-    return _monitor.summary()
+        raise HTTPException(503, pick(locale_value, "Service is not ready", "服务未就绪"))
+    return _monitor.summary(locale_value)
 
 
 @app.get("/trace/tool/{request_id}", response_model=ToolTraceResponse)
@@ -493,15 +536,22 @@ async def prometheus_metrics():
 
 
 @app.post("/search")
-async def search(query: str = Query(min_length=1, max_length=2000), top_k: int = Query(default=5, ge=1, le=20)):
+async def search(query: str = Query(min_length=1, max_length=2000),
+                 top_k: int = Query(default=5, ge=1, le=20),
+                 locale: str = Query(default=DEFAULT_LOCALE)):
     """
     演示检索优化链路：查询改写 → 并行召回 → 重排 → Top-K。
     展示 MCP 工具调用的核心亮点。
+
+    `locale` 缺省为 `zh-CN`；英文提问时查询改写会生成中文子查询以检索中文知识库，
+    返回的仍是原始知识片段。
     """
+    locale_value = _locale(locale)
     if _tool_manager is None:
-        raise HTTPException(503, "服务未就绪")
-    result = await _tool_manager.search_with_rewrite("knowledge_search", query, top_k=top_k)
-    return {"query": query, "results": result.data, "reranked": result.reranked, "cached": result.cached}
+        raise HTTPException(503, pick(locale_value, "Service is not ready", "服务未就绪"))
+    result = await _tool_manager.search_with_rewrite("knowledge_search", query, top_k=top_k, locale=locale_value)
+    return {"query": query, "locale": locale_value, "results": result.data,
+            "reranked": result.reranked, "cached": result.cached}
 
 
 class DocInput(BaseModel):
@@ -549,6 +599,7 @@ async def add_knowledge(body: BatchDocInput):
     批量导入文档到知识库。
 
     文档会自动切片（每片 500 字）并存入 ChromaDB，ChromaDB 内置 Embedding 模型自动向量化。
+    用户添加的文档按原文保存，不随界面语言自动翻译。
 
     示例请求体：
     ```json
@@ -585,7 +636,7 @@ async def upload_knowledge(file: UploadFile = File(...)):
     - `.txt` / `.md`：整个文件作为一篇文档，文件名作为标题
     - `.json`：JSON 数组格式 `[{"title": "...", "content": "..."}, ...]`
 
-    文件大小限制：10MB
+    文件大小限制：10MB。用户上传内容保留原文，不自动翻译。
     """
     tool = _tool_manager._tools.get("knowledge_search") if _tool_manager else None
     if tool is None:

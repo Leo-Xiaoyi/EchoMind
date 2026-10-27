@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from anthropic import AsyncAnthropic
 
 from core.llm_utils import create_message, extract_text_content
+from core.locales import DEFAULT_LOCALE, normalize_locale, pick
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,28 @@ _TEMPLATES: Dict[IntentCategory, List[str]] = {
     IntentCategory.HUMAN_HANDOFF: ["转人工客服", "我要找人工", "请升级处理"],
 }
 
+# English templates keep the same categories and coarse/fine grouping.
+_TEMPLATES_EN: Dict[IntentCategory, List[str]] = {
+    IntentCategory.QUERY:      ["What is my order status?", "How do I reset my password?", "When will my parcel arrive?"],
+    IntentCategory.COMPLAINT:  ["I have waited for hours!", "Your service is terrible!", "Nobody has handled my case!"],
+    IntentCategory.REQUEST:    ["Please cancel my order", "I need to change my address", "Please help me get a refund"],
+    IntentCategory.GREETING:   ["Hello", "Hi, is anyone there?", "Good morning"],
+    IntentCategory.ESCALATION: ["I want to file a complaint!", "Transfer me to a human agent", "I need your manager"],
+    IntentCategory.TECHNICAL:  ["The app keeps crashing", "I cannot log in", "I am getting a 500 error"],
+    IntentCategory.BILLING:    ["Why was I charged twice?", "I want a refund", "I have an invoice problem"],
+    IntentCategory.ACCOUNT:    ["Change my email address", "Close my account", "Update my personal information"],
+    IntentCategory.FEEDBACK:   ["Great service!", "Very satisfied", "I would like to leave positive feedback"],
+    IntentCategory.ORDER_STATUS: ["What is the status of my order now?", "Has my order shipped?", "Which step is my order at?"],
+    IntentCategory.LOGISTICS: ["When will my delivery arrive?", "Tracking has not updated", "How long does shipping take?"],
+    IntentCategory.REFUND: ["I want to request a refund", "How do I return an item for a refund?", "How long does a refund take?"],
+    IntentCategory.INVOICE: ["Please issue an invoice for me", "How do I change the invoice title?", "Where can I find the e-invoice?"],
+    IntentCategory.PAYMENT_ISSUE: ["Why was I charged twice?", "What should I do if payment failed?", "There is an extra charge this month"],
+    IntentCategory.ACCOUNT_SECURITY: ["My account was hacked", "I noticed an unauthorized login", "I need to reset my password"],
+    IntentCategory.TECHNICAL_LOGIN: ["I keep getting 401 when logging in", "I did not receive the verification code", "I cannot sign in to my account"],
+    IntentCategory.TECHNICAL_CRASH: ["The app keeps crashing", "The page shows a 500 error", "The system force-closes"],
+    IntentCategory.HUMAN_HANDOFF: ["Transfer me to a human agent", "I need a real person", "Please escalate this case"],
+}
+
 _SPECIFIC_INTENTS = {
     IntentCategory.ORDER_STATUS,
     IntentCategory.LOGISTICS,
@@ -126,9 +149,9 @@ _INTENT_GROUPS: Dict[IntentCategory, IntentCategory] = {
 
 # 紧急关键词
 _URGENCY_KEYWORDS = {
-    UrgencyLevel.CRITICAL: ["紧急", "emergency", "urgent", "asap", "立刻"],
-    UrgencyLevel.HIGH:     ["今天", "马上", "尽快", "hurry", "now"],
-    UrgencyLevel.MEDIUM:   ["这周", "soon", "快点"],
+    UrgencyLevel.CRITICAL: ["紧急", "emergency", "urgent", "asap", "立刻", "immediately"],
+    UrgencyLevel.HIGH:     ["今天", "马上", "尽快", "hurry", "now", "right away", "today"],
+    UrgencyLevel.MEDIUM:   ["这周", "soon", "快点", "this week"],
 }
 
 
@@ -178,13 +201,16 @@ class IntentRecognizer:
         self,
         message: str,
         history: Optional[List[Dict[str, str]]] = None,
+        locale: str = DEFAULT_LOCALE,
     ) -> IntentResult:
         """
         识别用户意图。
 
         history 格式：[{"role": "user"/"assistant", "content": "..."}]
+        locale 只影响系统生成的提示词、模板和说明，不用于猜测用户文本语言。
         """
-        key = self._cache_key(message, history)
+        locale = normalize_locale(locale)
+        key = self._cache_key(message, history, locale)
         if key in self._cache and time.monotonic() < self._cache_expiries.get(key, 0):
             self.cache_hits += 1
             return self._cache[key]
@@ -193,8 +219,8 @@ class IntentRecognizer:
         t0 = time.monotonic()
 
         # LLM 和向量分支并行；provider=local 仍参与向量投票。
-        llm_task = asyncio.create_task(self._llm_recognize(message, history))
-        emb_task = asyncio.create_task(self._embedding_recognize(message)) if self._embedding_enabled else None
+        llm_task = asyncio.create_task(self._llm_recognize(message, history, locale))
+        emb_task = asyncio.create_task(self._embedding_recognize(message, locale)) if self._embedding_enabled else None
         pat      = self._pattern_recognize(message)
 
         if emb_task:
@@ -228,12 +254,12 @@ class IntentRecognizer:
         self._cache_expiries[key] = time.monotonic() + (60 if result.embedding_source == "local-ngram" and self._embedding.enabled else 300)
         return result
 
-    async def check_embedding(self, message: str) -> Dict[str, Any]:
+    async def check_embedding(self, message: str, locale: str = DEFAULT_LOCALE) -> Dict[str, Any]:
         """独立验证向量链路；不调用 LLM，也不写入意图识别结果缓存。"""
         if not self._embedding_enabled:
             return {'success': False, 'source': 'disabled', 'error': 'embedding_branch_disabled'}
         started = time.monotonic()
-        result = await self._embedding_recognize(message)
+        result = await self._embedding_recognize(message, locale)
         source = result.get('source', 'unavailable')
         return {
             'success': source == 'siliconflow/' + self._embedding.MODEL,
@@ -261,24 +287,50 @@ class IntentRecognizer:
         self,
         message: str,
         history: Optional[List[Dict[str, str]]],
+        locale: str = DEFAULT_LOCALE,
     ) -> Dict[str, Any]:
         """策略 1：LLM 语义理解（Few-shot + 上下文）。"""
         message = self._clean_text(message)
-        # 构建 Few-shot 示例
-        examples = "\n".join(
-            f'  消息: "{t}" → 意图: {cat.value}'
-            for cat, tpls in _TEMPLATES.items()
-            for t in tpls[:1]  # 每类取 1 条，控制 prompt 长度
-        )
-        # 最近 3 轮对话上下文
-        ctx = ""
-        if history:
-            ctx = "\n最近对话:\n" + "\n".join(
-                f"  {self._clean_text(m.get('role', 'user'))}: {self._clean_text(m.get('content', ''))}"
-                for m in history[-3:]
+        templates = _TEMPLATES_EN if locale == "en" else _TEMPLATES
+        if locale == "en":
+            examples = "\n".join(
+                f'  Message: "{t}" → intent: {cat.value}'
+                for cat, tpls in templates.items()
+                for t in tpls[:1]
             )
+            ctx = ""
+            if history:
+                ctx = "\nRecent conversation:\n" + "\n".join(
+                    f"  {self._clean_text(m.get('role', 'user'))}: {self._clean_text(m.get('content', ''))}"
+                    for m in history[-3:]
+                )
+            prompt = f"""You are a customer support intent analyst. Classify the user's intent from the examples and return JSON.
+If the message matches a specific business intent, prefer the specific intent over the broad category.
+For example, prefer refund over billing, invoice over billing, and technical_login over technical.
 
-        prompt = f"""你是客服意图分析专家。根据示例判断用户意图，返回 JSON。
+Examples:
+{examples}
+
+        {ctx}
+        User message: "{message}"
+
+Return format (JSON only, no other text):
+{{"intent": "<intent value>", "confidence": <0-1>, "reasoning": "<one sentence>"}}
+
+Available intents: {", ".join(c.value for c in IntentCategory)}"""
+        else:
+            examples = "\n".join(
+                f'  消息: "{t}" → 意图: {cat.value}'
+                for cat, tpls in templates.items()
+                for t in tpls[:1]
+            )
+            ctx = ""
+            if history:
+                ctx = "\n最近对话:\n" + "\n".join(
+                    f"  {self._clean_text(m.get('role', 'user'))}: {self._clean_text(m.get('content', ''))}"
+                    for m in history[-3:]
+                )
+            prompt = f"""你是客服意图分析专家。根据示例判断用户意图，返回 JSON。
 如果用户问题能匹配细粒度业务意图，请优先返回细粒度意图，而不是宽泛大类。
 例如退款优先返回 refund，发票优先返回 invoice，登录故障优先返回 technical_login。
 
@@ -311,17 +363,19 @@ class IntentRecognizer:
                 data["intent"] = IntentCategory.OTHER
             confidence = data.get("confidence")
             if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
-                raise ValueError("意图 confidence 必须是 0 到 1 的有限数字")
+                raise ValueError("intent confidence must be a finite number between 0 and 1")
             return data
         except Exception as ex:
             logger.warning(f"LLM 识别失败: {ex}")
-            return {"intent": IntentCategory.OTHER, "confidence": 0.0, "reasoning": "LLM 失败", "failed": True}
+            return {"intent": IntentCategory.OTHER, "confidence": 0.0,
+                    "reasoning": pick(locale, "LLM failed", "LLM 失败"), "failed": True}
 
-    async def _embedding_recognize(self, message: str) -> Dict[str, Any]:
+    async def _embedding_recognize(self, message: str, locale: str = DEFAULT_LOCALE) -> Dict[str, Any]:
         """策略 2：Embedding 向量相似度匹配。"""
         try:
+            templates = _TEMPLATES_EN if locale == "en" else _TEMPLATES
             templates, msg_vec, source = await self._embedding.vectors(
-                self._clean_text(message), _TEMPLATES, self._local_embedding)
+                self._clean_text(message), templates, self._local_embedding)
 
             best_cat, best_score = IntentCategory.OTHER, 0.0
             for cat, vecs in templates.items():
@@ -338,25 +392,25 @@ class IntentRecognizer:
         """策略 3：关键词模式匹配（同步，零延迟兜底）。"""
         msg = message.lower()
         specific_patterns = {
-            IntentCategory.HUMAN_HANDOFF: ["转人工", "人工客服", "找人工"],
-            IntentCategory.ORDER_STATUS: ["订单状态", "发货了吗", "处理到哪", "order status"],
-            IntentCategory.LOGISTICS: ["物流", "快递", "配送", "运单", "delivery", "shipping"],
-            IntentCategory.REFUND: ["退款", "退货", "refund", "return"],
-            IntentCategory.INVOICE: ["发票", "抬头", "税号", "invoice"],
-            IntentCategory.PAYMENT_ISSUE: ["重复扣款", "多扣", "支付失败", "扣费", "payment failed"],
-            IntentCategory.ACCOUNT_SECURITY: ["被盗", "异常登录", "重置密码", "两步验证", "安全"],
-            IntentCategory.TECHNICAL_LOGIN: ["无法登录", "登录失败", "401", "验证码"],
-            IntentCategory.TECHNICAL_CRASH: ["崩溃", "闪退", "500", "报错", "crash"],
+            IntentCategory.HUMAN_HANDOFF: ["转人工", "人工客服", "找人工", "human agent", "real person", "representative", "human support"],
+            IntentCategory.ORDER_STATUS: ["订单状态", "发货了吗", "处理到哪", "order status", "where is my order", "has my order shipped", "shipped yet"],
+            IntentCategory.LOGISTICS: ["物流", "快递", "配送", "运单", "delivery", "shipping", "tracking", "courier", "delayed", "late"],
+            IntentCategory.REFUND: ["退款", "退货", "refund", "return", "refunded", "refunding", "returned", "returning", "money back"],
+            IntentCategory.INVOICE: ["发票", "抬头", "税号", "invoice", "invoices", "receipt", "tax id"],
+            IntentCategory.PAYMENT_ISSUE: ["重复扣款", "多扣", "支付失败", "扣费", "payment failed", "charged twice", "double charge", "duplicate charge", "overcharged", "charged", "charging"],
+            IntentCategory.ACCOUNT_SECURITY: ["被盗", "异常登录", "重置密码", "两步验证", "安全", "hacked", "unauthorized login", "reset password", "two-factor", "2fa", "security", "compromised"],
+            IntentCategory.TECHNICAL_LOGIN: ["无法登录", "登录失败", "401", "验证码", "cannot log in", "can't log in", "login failed", "verification code", "sign in", "locked out", "cannot sign in", "can't sign in"],
+            IntentCategory.TECHNICAL_CRASH: ["崩溃", "闪退", "500", "报错", "crash", "crashes", "crashing", "crashed", "500 error"],
         }
         generic_patterns = {
-            IntentCategory.ESCALATION: ["投诉", "经理", "supervisor"],
-            IntentCategory.COMPLAINT:  ["太差", "糟糕", "horrible", "等了很久"],
-            IntentCategory.QUERY:      ["?", "？", "怎么", "什么", "status"],
-            IntentCategory.REQUEST:    ["帮我", "需要", "please", "help"],
-            IntentCategory.GREETING:   ["你好", "嗨", "hello", "hi"],
-            IntentCategory.BILLING:    ["退款", "扣款", "发票", "refund"],
-            IntentCategory.TECHNICAL:  ["崩溃", "报错", "error", "crash"],
-            IntentCategory.ACCOUNT:    ["密码", "邮箱", "账户", "password"],
+            IntentCategory.ESCALATION: ["投诉", "经理", "supervisor", "manager", "complain", "complaint", "complaining", "escalate"],
+            IntentCategory.COMPLAINT:  ["太差", "糟糕", "horrible", "等了很久", "terrible", "awful", "worst", "waited hours"],
+            IntentCategory.QUERY:      ["?", "？", "怎么", "什么", "status", "how", "what", "when", "where is", "how long"],
+            IntentCategory.REQUEST:    ["帮我", "需要", "please", "help", "help me", "i need", "cancel", "cancelled", "canceled", "cancelling", "canceling"],
+            IntentCategory.GREETING:   ["你好", "嗨", "hello", "hi", "good morning"],
+            IntentCategory.BILLING:    ["退款", "扣款", "发票", "refund", "billing", "charge", "charges", "invoices"],
+            IntentCategory.TECHNICAL:  ["崩溃", "报错", "error", "crash", "bug", "not working", "failing", "broken"],
+            IntentCategory.ACCOUNT:    ["密码", "邮箱", "账户", "password", "email", "account", "profile"],
         }
 
         best_cat, best_score = self._best_pattern_match(msg, specific_patterns)
@@ -425,13 +479,38 @@ class IntentRecognizer:
     def _extract_entities(self, message: str) -> Dict[str, List[str]]:
         """用规则提取高价值实体，避免每次识别都额外调用 LLM。"""
         message = self._clean_text(message)
+        order_ids: List[str] = []
+        for pattern in (
+            # Explicit hash form: #12345 / #ABC-123.
+            r"#\s*([A-Za-z0-9][A-Za-z0-9_-]{3,31})",
+            # "order is <token>" with a digit; keeps words such as "pending" out.
+            r"(?<![a-z])order\s+is\s+(?=[A-Za-z0-9_-]*\d)"
+            r"([A-Za-z0-9][A-Za-z0-9_-]{3,31})",
+            # Label form; the left boundary prevents "border"/"recorder".
+            r"(?:订单号?|(?<![a-z])order\s*(?:id|number|no\.?))\s*(?:is|为|是)?\s*[:：#]?\s*"
+            r"(?=[A-Za-z0-9_-]*\d)([A-Za-z0-9][A-Za-z0-9_-]{3,31})",
+            # Explicit separator.
+            r"(?<![a-z])order\s*[:：#]\s*(?=[A-Za-z0-9_-]*\d)([A-Za-z0-9][A-Za-z0-9_-]{3,31})",
+            # Bare numeric or alphanumeric token containing a digit; exclude 3-digit HTTP codes.
+            r"(?<![a-z])order\s+(\d[A-Za-z0-9_-]{3,31})",
+            r"(?<![a-z])order\s+(?!(?:[45]\d{2})(?![A-Za-z0-9_-]))"
+            r"([A-Za-z]{0,10}\d[A-Za-z0-9_-]{2,31})",
+        ):
+            order_ids.extend(re.findall(pattern, message, re.I))
         return {
-            "order_id": self._unique(re.findall(r"(?:订单号?|order(?:_id)?|#)\s*[:：#]?\s*([A-Za-z0-9_-]{4,32})", message, re.I)),
+            "order_id": self._unique(order_ids),
             "product": [],
-            "date": self._unique(re.findall(r"(今天|明天|昨天|本周|这周|下周|\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)", message)),
-            "amount": self._unique(re.findall(r"((?:¥|￥)\s*\d+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?\s*(?:元|块|rmb|cny|usd|美元))", message, re.I)),
+            "date": self._unique(re.findall(
+                r"(今天|明天|昨天|本周|这周|下周|\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?"
+                r"|today|tomorrow|yesterday|this\s+week|next\s+week"
+                r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2})",
+                message, re.I)),
+            "amount": self._unique(re.findall(
+                r"((?:¥|￥|\$)\s*\d+(?:\.\d{1,2})?"
+                r"|\d+(?:\.\d{1,2})?\s*(?:元|块|rmb|cny|usd|nzd|dollars?|美元))",
+                message, re.I)),
             "error_code": self._unique(
-                re.findall(r"(?:error(?:_code)?|错误码|状态码|http)\s*[:：#]?\s*([45]\d{2})\b", message, re.I)
+                re.findall(r"(?:error(?:_code)?|错误码|状态码|status\s*code|http)\s*[:：#]?\s*([45]\d{2})\b", message, re.I)
                 + re.findall(r"\b([45]\d{2})\b", message)
             ),
         }
@@ -470,8 +549,13 @@ class IntentRecognizer:
             return UrgencyLevel.MEDIUM
         return UrgencyLevel.LOW
 
-    def _cache_key(self, message: str, history: Optional[List[Dict[str, str]]] = None) -> str:
-        payload = {"message": self._clean_text(message)}
+    def _cache_key(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        locale: str = DEFAULT_LOCALE,
+    ) -> str:
+        payload = {"message": self._clean_text(message), "locale": locale}
         if history:
             payload["history"] = [
                 {
@@ -494,7 +578,10 @@ class IntentRecognizer:
     ) -> tuple[IntentCategory, float]:
         best_cat, best_score = IntentCategory.OTHER, 0.0
         for cat, kws in patterns.items():
-            hits = sum(1 for kw in kws if kw in message)
+            hits = sum(1 for kw in kws if (
+                re.search(rf"(?<![a-z]){re.escape(kw)}(?![a-z])", message)
+                if kw.isascii() else kw in message
+            ))
             if not hits:
                 continue
             # 单个明确业务关键词就给可用置信度；多个关键词命中时提高置信度。

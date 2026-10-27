@@ -1,3 +1,5 @@
+import { t } from './i18n.js'
+
 export async function pollEvaluation(initial, fetchJob, { isCurrent = () => true, onProgress = () => {}, interval = 1500 } = {}) {
   let job = initial
   let failures = 0
@@ -5,7 +7,7 @@ export async function pollEvaluation(initial, fetchJob, { isCurrent = () => true
     onProgress(job)
     if (job.status === 'completed') return job.result
     if (job.status === 'failed' || job.status === 'cancelled') {
-      const error = new Error(job.error || '评测任务失败')
+      const error = new Error(job.error || t('errors.evalJobFailed'))
       error.terminal = true
       throw error
     }

@@ -12,6 +12,18 @@ EchoMind 是我围绕客服与运营请求构建的多 Agent 应用。一个用�
 
 开发模式下，空知识库可自动导入六篇明确标注为虚构示例的政策，用于体验检索链路。设置 `ECHOMIND_SEED_DEMO_DOCS=false` 可从空库开始；生产模式不会自动导入这些资料。
 
+## 语言切换
+
+Vue 界面默认使用**英文**，新访客可随时切换到**中文**；选择保存在浏览器本地，刷新后仍保留。导航、表单、示例问题、空状态，以及评测、监控和追踪面板的固定标签，统一来自前端词典。后端返回的错误可能保留原始 detail 供诊断，外层状态说明按所选语言呈现。
+
+`POST /chat` 接受可选的 `locale`（`en` 或 `zh-CN`，缺省为 `zh-CN`，兼容旧客户端）。所选语言作为输出语言要求传给 Agent，用于最终面向用户的回复，覆盖单 Agent、主辅 Agent 合成、人工交接、澄清和失败降级路径。这是运行时的提示词要求，不是独立于模型的保证；请用实际配置的模型服务确认回复语言。英文问题使用少量英文意图样例和关键词，但仍复用现有中文 Skills、路由规则和知识库；需要检索时，查询改写可生成中文子查询，以便英文问题找到中文演示政策；如果改写模型不可用，则只用一个很小的中英术语表（例如 address → 地址）作为召回兜底。这些检索路径不会翻译知识原文；最终回复仍由 Agent 按所选语言生成。前端和后端需要一起部署：旧后端会忽略可选的 `locale` 字段并返回中文，新的英文界面可能因此看起来仍收到中文回复。
+
+并不是所有内容都会翻译：`intent`、`agent_type`、`status`、`error_code`、工具名、监控指标等机器字段，Skills 名称与正文、检索页展示的知识原文、用户上传资料、外部 MCP 原文，以及内置中文评测用例、Judge 和基线，都保留原样。切换语言会开始新会话，避免上一语言的历史驱动新回复；服务端已有会话、用户画像和知识库不会被删除。如果浏览器保存了旧会话但没有保存语言（例如来自旧版本），界面也会开始新会话，让首条回复使用新选择的语言。
+
+跨语言检索按相关性排序：较小的 `top_k` 可能遗漏有用片段，结果顺序也可能变化。检索到政策片段不代表系统已对真实账户、订单或支付执行操作。
+
+非法 `locale` 会返回 `400`；不传 `locale` 时保持原有中文行为。
+
 ## 可以从哪里看起
 
 - 想体验应用：按[本地启动](#本地启动)运行，然后在网页中尝试“登录报 401，而且刚才重复扣款了”。
@@ -93,10 +105,10 @@ flowchart LR
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H 'Content-Type: application/json' \
-  -d '{"message":"登录返回 HTTP 401，怎么处理？","user_id":"demo-user","conv_id":"demo-conversation","client_request_id":"turn-001"}'
+  -d '{"message":"登录返回 HTTP 401，怎么处理？","user_id":"demo-user","conv_id":"demo-conversation","client_request_id":"turn-001","locale":"zh-CN"}'
 ```
 
-同一会话的追问沿用 `conv_id`，每条新消息使用新的 `client_request_id`。同一请求 ID 配合同一消息用于重试；换了消息却复用 ID 会被拒绝，避免把旧回复误当成新结果。
+同一会话的追问沿用 `conv_id`，每条新消息使用新的 `client_request_id`。同一请求 ID 配合同一消息用于重试；换了消息或换了 `locale` 却复用 ID 会被拒绝，避免把旧回复误当成新结果。删除 `locale` 即保持原有 `zh-CN` 行为。
 
 停止服务时保留数据：
 
@@ -129,17 +141,17 @@ Vite 在 [localhost:5173](http://localhost:5173) 提供页面，将 `/api/python
 
 **工具调用有清晰的执行边界。** 模型提出的参数须通过 schema 校验；外部 MCP 服务公开了工具，也不意味着所有 Agent 都可调用。超时、缓存、熔断和请求轨迹让失败和恢复更容易分析。
 
-**评测覆盖回答质量。** HTTP 成功或工具执行成功不能证明答案好。项目把意图分类、Agent 回复、Judge 评分和回归比较接在应用链路上，以便在改动规则、工具或模型后进行检查。
+**评测覆盖回答质量。** HTTP 成功或工具执行成功不能证明答案好。项目把意图分类、Agent 回复、Judge 评分和回归比较接在应用链路上，以便在改动规则、工具或模型后进行检查。内置用例、Judge 提示词和基线属于内部中文材料；切换界面语言不会生成英文评测套件或第二套基线。
 
 ## 接口与配置
 
 | 入口 | 用途 |
 | --- | --- |
-| `POST /chat` | 聊天主链路；支持同一会话的追问和同一消息的重试回执 |
-| `POST /search`、`POST /knowledge/add`、`POST /knowledge/upload` | 搜索、导入或上传共享知识资料 |
+| `POST /chat` | 聊天主链路；支持同一会话的追问和同一消息的重试回执；可选 `locale`（`en` / `zh-CN`，缺省 `zh-CN`） |
+| `POST /search`、`POST /knowledge/add`、`POST /knowledge/upload` | 搜索、导入或上传共享知识资料；`/search` 可选 `locale`，用于跨语查询改写 |
 | `GET /skills`、`POST /skills/reload` | 查看和重新加载角色规范 |
-| `GET /monitor`、`GET /metrics` | 运行监控与 Prometheus 指标 |
-| `POST /eval/run`、`GET /eval/jobs/{job_id}` | 提交和查看异步评测 |
+| `GET /monitor`、`GET /metrics` | 运行监控与 Prometheus 指标；`/monitor` 可选 `locale`，用于固定反馈文案 |
+| `POST /eval/run`、`GET /eval/jobs/{job_id}` | 提交和查看异步评测（中文用例与基线） |
 
 | 配置 | 作用 |
 | --- | --- |

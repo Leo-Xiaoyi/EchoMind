@@ -1,7 +1,7 @@
 ---
 name: 账单退款处理规范
 description: 适用于 EchoMind BillingAgent 的账单查询、扣款说明、退款申请、发票开具和订阅管理规范
-keywords: 退款,退费,扣款,重复扣款,支付,账单,发票,订阅,续费,取消订阅,优惠券,余额,充值,付款,收据,invoice,refund,billing,payment
+keywords: 退款,退费,扣款,重复扣款,支付,账单,发票,订阅,续费,取消订阅,优惠券,余额,充值,付款,收据,invoice,refund,billing,payment,charge,charged,double charge,duplicate charge,subscription,renewal,receipt,coupon,balance,transaction
 agents: billing
 enabled: true
 ---

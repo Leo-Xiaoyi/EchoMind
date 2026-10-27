@@ -24,6 +24,8 @@ from typing import Any, Deque, Dict, List, Optional
 import httpx
 from prometheus_client import Counter, Gauge, Histogram, REGISTRY, start_http_server
 
+from core.locales import DEFAULT_LOCALE, normalize_locale
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,6 +56,8 @@ class Suggestion:
     detail:      str
     action:      str    # 具体操作步骤
     priority:    int    # 1-10
+    kind:        str = ""
+    params:      Dict[str, Any] = field(default_factory=dict)
 
 
 # ── 异常检测 ──────────────────────────────────────────────────────────────────
@@ -256,6 +260,9 @@ class PerformanceMonitor:
                     detail=f"成功率 {sr:.1%}，平均延迟 {ms:.0f}ms，熔断状态: {s['circuit_state']}",
                     action="1. 检查工具依赖服务是否正常\n2. 查看错误日志\n3. 考虑增加超时时间或降级策略",
                     priority=9,
+                    kind="tool_failures",
+                    params={"tool": tool_name, "fails": cf, "success_rate": sr,
+                            "avg_ms": ms, "circuit_state": s["circuit_state"]},
                 ))
 
         # ── 路由优化建议 ──────────────────────────────────────────────────────
@@ -311,6 +318,9 @@ class PerformanceMonitor:
                         "      3. 考虑增加同类型 Agent 实例"
                     ),
                     priority=8,
+                    kind="agent_low_success",
+                    params={"agent": agent_key, "success_rate": s["success_rate"],
+                            "routing_score": s["routing_score"]},
                 ))
 
     def _add_suggestion(self, s: Suggestion) -> None:
@@ -328,16 +338,61 @@ class PerformanceMonitor:
 
     # ── 查询接口 ──────────────────────────────────────────────────────────────
 
-    def summary(self) -> Dict[str, Any]:
-        """返回当前监控摘要，供 API 层暴露。"""
+    def summary(self, locale: str = DEFAULT_LOCALE) -> Dict[str, Any]:
+        """返回当前监控摘要，供 API 层暴露；固定说明按 locale 呈现。"""
         from core.performance import llm_usage_summary
+        locale = normalize_locale(locale)
         return {
+            "locale": locale,
             "llm_usage": llm_usage_summary(),
-            "agent_stats":   self._orchestrator.get_stats(),
+            "agent_stats": self._agent_stats(locale),
             "tool_stats":    self._tool_manager.get_stats(),
-            "active_alerts": [asdict(a) for a in self._alerts if not a.resolved][-10:],
+            "active_alerts": [self._alert_view(a, locale) for a in self._alerts if not a.resolved][-10:],
             "suggestions":   [
-                {"title": s.title, "action": s.action, "priority": s.priority}
+                self._suggestion_view(s, locale)
                 for s in sorted(self._suggestions, key=lambda x: -x.priority)[:5]
             ],
         }
+
+    def _agent_stats(self, locale: str) -> Dict[str, Any]:
+        # Agent 角色名/流程属于内部中文材料；页面固定标签由前端词典翻译。
+        return self._orchestrator.get_stats()
+
+    @staticmethod
+    def _alert_view(alert: Alert, locale: str) -> Dict[str, Any]:
+        data = asdict(alert)
+        metric, _, label = alert.metric.partition(":")
+        if label:
+            data["message"] = (
+                f"{label} {metric} = {alert.value:.3f}; threshold {alert.threshold}"
+                if locale == "en" else
+                f"{label} 的 {metric} = {alert.value:.3f}，阈值 {alert.threshold}"
+            )
+        return data
+
+    @staticmethod
+    def _suggestion_view(suggestion: Suggestion, locale: str) -> Dict[str, Any]:
+        if suggestion.kind == "tool_failures":
+            p = suggestion.params
+            if locale == "en":
+                title = f"Tool {p.get('tool')} failed {p.get('fails')} times in a row"
+                action = ("1. Check whether the tool's dependency service is healthy\n"
+                          "2. Review the error logs\n"
+                          "3. Consider a longer timeout or a fallback strategy")
+            else:
+                title = suggestion.title
+                action = suggestion.action
+        elif suggestion.kind == "agent_low_success":
+            p = suggestion.params
+            if locale == "en":
+                title = f"Agent {p.get('agent')} has a low success rate"
+                action = ("The orchestrator's _best_agent() has already lowered this agent's routing weight.\n"
+                          "Suggested: 1. Review the system prompt\n"
+                          "          2. Check whether this problem type exceeds the agent's scope\n"
+                          "          3. Consider adding another agent instance")
+            else:
+                title = suggestion.title
+                action = suggestion.action
+        else:
+            return {"title": suggestion.title, "action": suggestion.action, "priority": suggestion.priority}
+        return {"title": title, "action": action, "priority": suggestion.priority}

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { pollEvaluation } from '../src/lib/evaluationJobs.js'
+import { setLocale } from '../src/lib/i18n.js'
 test('polls until report is ready', async () => {
   let count = 0
   const result = await pollEvaluation({job_id:'x', status:'queued'}, async () => (++count === 1 ? {job_id:'x',status:'running'} : {job_id:'x',status:'completed',result:{total:5}}), {interval:0})
@@ -9,6 +10,14 @@ test('polls until report is ready', async () => {
 })
 test('propagates job failure', async () => {
   await assert.rejects(pollEvaluation({status:'failed',error:'timeout'}, () => {}), /timeout/)
+})
+
+test('failed job without backend detail uses the localized fallback', async () => {
+  setLocale('en')
+  await assert.rejects(pollEvaluation({status: 'failed'}, () => {}), /Evaluation job failed/)
+  setLocale('zh-CN')
+  await assert.rejects(pollEvaluation({status: 'failed'}, () => {}), /评测任务失败/)
+  setLocale('en')
 })
 test('invalidated request stops polling', async () => {
   let called = false

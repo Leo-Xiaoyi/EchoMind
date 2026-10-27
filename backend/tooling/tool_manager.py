@@ -18,6 +18,7 @@ import hashlib
 import inspect
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -27,9 +28,60 @@ from anthropic import AsyncAnthropic
 
 from core.llm_utils import create_message, extract_text_content
 from core.concurrency import KeyedLocks
+from core.locales import DEFAULT_LOCALE, normalize_locale
 from core.performance import measure_stage, record_event
 
 logger = logging.getLogger(__name__)
+
+# 只用于英文检索的极小术语桥接；知识库正文与最终回复仍保留原文/所选语言。
+_BRIDGE_TERMS = (
+    ("charged twice", "重复扣款"), ("duplicate charge", "重复扣款"), ("double charge", "重复扣款"),
+    ("money back", "退款"), ("refund", "退款"), ("returned", "退货"), ("return", "退货"),
+    ("invoice", "发票"), ("receipt", "收据"), ("billing", "账单"),
+    ("charged", "扣款"), ("charging", "扣款"), ("charge", "扣款"),
+    ("payment", "支付"), ("subscription", "订阅"), ("renewal", "续费"),
+    ("order", "订单"), ("delivery", "配送"), ("shipping", "配送"),
+    ("tracking", "物流"), ("logistics", "物流"),
+    ("address", "地址"), ("change", "修改"), ("modify", "修改"), ("update", "更新"),
+    ("cancel", "取消"), ("cancelled", "取消"), ("canceled", "取消"),
+    ("login", "登录"), ("sign in", "登录"), ("cannot log in", "无法登录"), ("locked out", "锁定"),
+    ("error", "报错"), ("crash", "崩溃"), ("bug", "故障"),
+    ("account", "账户"), ("password", "密码"), ("security", "安全"),
+    ("warranty", "保修"), ("damaged", "损坏"), ("missing", "未收到"),
+    ("late", "延迟"), ("delayed", "延迟"), ("status", "状态"),
+    ("how long", "多久"), ("where is", "在哪里"), ("when", "什么时候"), ("why", "为什么"),
+    ("how", "如何"), ("take", "需要"), ("policy", "政策"),
+    ("membership", "会员"), ("points", "积分"), ("coupon", "优惠券"), ("balance", "余额"),
+    ("human agent", "人工客服"), ("human", "人工"),
+)
+
+
+def _bridge_query(query: str) -> str:
+    text = query.lower()
+    terms = []
+    for en, zh in _BRIDGE_TERMS:
+        if en.isascii():
+            if re.search(rf"(?<![a-z]){re.escape(en)}(?![a-z])", text):
+                terms.append(zh)
+        elif en in text:
+            terms.append(zh)
+    return " ".join(dict.fromkeys(terms))
+
+
+def _bridge_boost(query: str, items: List[Any]) -> List[Any]:
+    """模型重排不可用时，用桥接术语与原文的重合度做确定性排序。"""
+    terms = [term for term in _bridge_query(query).split() if term]
+    if not terms:
+        return items
+
+    def score(item):
+        if not isinstance(item, dict):
+            return 0
+        text = f"{item.get('title', '')} {item.get('content', '')}"
+        return sum(1 for term in terms if term in text)
+
+    return [item for _, item in sorted(
+        enumerate(items), key=lambda pair: (-score(pair[1]), pair[0]))]
 
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
@@ -311,18 +363,24 @@ class MCPToolManager:
 
     # ── 查询改写（解决召回不全）────────────────────────────────────────────────
 
-    async def rewrite_query(self, query: str, n: int = 3) -> List[str]:
+    async def rewrite_query(self, query: str, n: int = 3, locale: str = DEFAULT_LOCALE) -> List[str]:
         """
         用 LLM 将原始查询改写为 n 个不同角度的子查询。
 
         目的：单一查询往往只能召回某一角度的文档，
         多角度子查询并行检索后合并，显著提升召回率。
 
-        示例：
-          原始: "退款流程"
-          改写: ["如何申请退款", "退款需要多少天", "退款政策是什么"]
+        知识库正文保留中文；英文提问时仍生成中文子查询做跨语检索，
+        避免仅靠英文向量相似度碰运气。
         """
-        prompt = f"""将以下用户查询改写为 {n} 个不同角度的搜索子查询，用于检索知识库。
+        locale = normalize_locale(locale)
+        if locale == "en":
+            prompt = f"""用户用英语提问，知识库主要是中文资料。请把以下问题改写为 {n} 个中文搜索子查询，用于检索中文知识库。
+要求：每个子查询角度不同，覆盖原始问题的不同方面；保留订单号、错误码等关键实体。
+原始问题: "{query}"
+返回 JSON 数组，例如: ["中文子查询1", "中文子查询2", "中文子查询3"]"""
+        else:
+            prompt = f"""将以下用户查询改写为 {n} 个不同角度的搜索子查询，用于检索知识库。
 要求：每个子查询角度不同，覆盖原始问题的不同方面。
 原始查询: "{query}"
 返回 JSON 数组，例如: ["子查询1", "子查询2", "子查询3"]"""
@@ -336,11 +394,16 @@ class MCPToolManager:
             raw = extract_text_content(resp.content)
             s, e = raw.find("["), raw.rfind("]") + 1
             queries = json.loads(raw[s:e])
-            # 原始查询也保留，去重
-            return list(dict.fromkeys([query] + [q[:2000] for q in queries if isinstance(q, str) and q.strip()][:n]))
+            # 原始查询也保留，去重；英文提问额外保留一个确定性的中文术语桥接查询。
+            result = list(dict.fromkeys([query] + [q[:2000] for q in queries if isinstance(q, str) and q.strip()][:n]))
+            bridge = _bridge_query(query) if locale == "en" else ""
+            if bridge and bridge not in result:
+                result.append(bridge)
+            return result
         except Exception as ex:
             logger.warning(f"查询改写失败，使用原始查询: {ex}")
-            return [query]
+            bridge = _bridge_query(query) if locale == "en" else ""
+            return [query] + ([bridge] if bridge and bridge != query else [])
 
     async def search_with_rewrite(
         self,
@@ -348,12 +411,14 @@ class MCPToolManager:
         query: str,
         top_k: int = 5,
         context: Optional[Dict[str, Any]] = None,
+        locale: str = DEFAULT_LOCALE,
     ) -> ToolResult:
         """
         完整的检索优化链路：查询改写 → 并行召回 → 去重 → 重排 → Top-K
 
         这是解决"检索不全、召回不好"的完整方案。
         """
+        locale = normalize_locale(locale)
         if type(top_k) is not int or not 1 <= top_k <= 20:
             return ToolResult(False, [], tool_name, error="top_k 必须是 1–20 的整数")
         if not isinstance(query, str) or not query.strip() or len(query) > 2000:
@@ -363,11 +428,11 @@ class MCPToolManager:
             return ToolResult(False, [], tool_name, error=f"工具不存在: {tool_name}")
         version = self._cache_versions.get(tool_name, 0)
         cache_name = f"{tool_name}:pipeline"
-        params = {"query": query, "top_k": top_k, "version": version}
+        params = {"query": query, "top_k": top_k, "version": version, "locale": locale}
         # TTL=0 保留禁用缓存的语义，也不合并可能具有副作用的调用。
         if tool.cache_ttl <= 0:
             with measure_stage("rag_search"):
-                return await self._search_uncached(tool_name, query, top_k, context)
+                return await self._search_uncached(tool_name, query, top_k, context, locale)
         key = self._cache_key(cache_name, params, context=context)
         with measure_stage("rag_search"):
             async with self._search_locks.hold(key):
@@ -377,15 +442,16 @@ class MCPToolManager:
                     data, reranked = cached
                     return ToolResult(True, data, tool_name, cached=True, reranked=reranked)
                 record_event("rag_pipeline_cache_miss")
-                result = await self._search_uncached(tool_name, query, top_k, context)
+                result = await self._search_uncached(tool_name, query, top_k, context, locale)
                 if result.success and version == self._cache_versions.get(tool_name, 0):
                     self._set_cache(cache_name, params, result.data, tool.cache_ttl,
                                     reranked=result.reranked, context=context)
                 return result
 
-    async def _search_uncached(self, tool_name, query, top_k, context):
+    async def _search_uncached(self, tool_name, query, top_k, context, locale=DEFAULT_LOCALE):
+        locale = normalize_locale(locale)
         # 1. 查询改写：生成多角度子查询
-        sub_queries = await self.rewrite_query(query, n=3)
+        sub_queries = await self.rewrite_query(query, n=3, locale=locale)
         logger.info(f"查询改写: {query!r} → {sub_queries}")
 
         # 2. 并行召回：所有子查询同时检索
@@ -413,6 +479,9 @@ class MCPToolManager:
 
         # 4. 重排：用 LLM 对合并结果按相关性打分，取 Top-K
         data, reranked = await self._rerank_with_status(query, merged, top_k)
+        if locale == "en" and not reranked:
+            # 模型重排不可用时，仅用中文桥接术语与原文的重合度兜底排序。
+            data = _bridge_boost(query, merged)[:top_k]
         return ToolResult(success=True, data=data, tool_name=tool_name, reranked=reranked)
 
     # ── 结果重排（解决召回不好）──────────────────────────────────────────────

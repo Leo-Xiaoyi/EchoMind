@@ -2,21 +2,21 @@
   <div class="request-inspector">
     <section class="inspector-section">
       <div class="inspector-section-heading">
-        <h3>请求追踪</h3>
+        <h3>{{ t('inspector.requestTrace') }}</h3>
         <span class="state-label">
           <i :class="{ working: busy, complete: lastResponse && !busy }"></i>
-          {{ busy ? '处理中' : lastResponse ? '已完成' : '待开始' }}
+          {{ busy ? t('inspector.stateWorking') : lastResponse ? t('inspector.stateDone') : t('inspector.stateIdle') }}
         </span>
       </div>
-      <p class="inspector-intro">{{ busy ? '正在等待服务返回处理结果。' : lastResponse ? '本次请求的处理路径与路由结果。' : '发送一条消息，查看 Agent 的处理过程。' }}</p>
+      <p class="inspector-intro">{{ busy ? t('inspector.introWorking') : lastResponse ? t('inspector.introDone') : t('inspector.introIdle') }}</p>
       <ol class="trace-steps" :class="{ complete: lastResponse && !busy }">
         <li>
           <span class="trace-step-icon">
             <AppIcon name="search" />
           </span>
           <div>
-            <strong>意图识别</strong>
-            <p>{{ lastResponse?.intent || '理解客户的问题' }}</p>
+            <strong>{{ t('inspector.stepIntent') }}</strong>
+            <p>{{ lastResponse?.intent || t('inspector.intentFallback') }}</p>
           </div>
         </li>
         <li>
@@ -24,8 +24,8 @@
             <AppIcon name="book" />
           </span>
           <div>
-            <strong>知识检索</strong>
-            <p>{{ lastResponse ? lastResponse.knowledgeUsed ? '已使用知识库' : '未使用知识库' : '查找相关业务知识' }}</p>
+            <strong>{{ t('inspector.stepKnowledge') }}</strong>
+            <p>{{ lastResponse ? lastResponse.knowledgeUsed ? t('inspector.usedKnowledge') : t('inspector.notUsedKnowledge') : t('inspector.findKnowledge') }}</p>
           </div>
         </li>
         <li>
@@ -33,8 +33,8 @@
             <AppIcon name="route" />
           </span>
           <div>
-            <strong>Agent 路由</strong>
-            <p>{{ lastResponse ? lastResponse.primaryAgent || lastResponse.agentType || '未返回 Agent' : '分配给合适的 Agent' }}</p>
+            <strong>{{ t('inspector.stepRouting') }}</strong>
+            <p>{{ lastResponse ? lastResponse.primaryAgent || lastResponse.agentType || t('inspector.noAgent') : t('inspector.assignAgent') }}</p>
           </div>
         </li>
         <li>
@@ -42,28 +42,28 @@
             <AppIcon name="chat" />
           </span>
           <div>
-            <strong>生成回复</strong>
-            <p>{{ busy ? '等待回复' : lastResponse ? lastResponse.escalated ? '已转人工处理' : '回复已生成' : '等待新的请求' }}</p>
+            <strong>{{ t('inspector.stepReply') }}</strong>
+            <p>{{ busy ? t('inspector.waitingReply') : lastResponse ? lastResponse.escalated ? t('inspector.escalated') : t('inspector.replyReady') : t('inspector.waitNew') }}</p>
           </div>
         </li>
       </ol>
       <div class="request-metrics">
         <div>
-          <span>响应耗时</span>
+          <span>{{ t('inspector.responseTime') }}</span>
           <strong>
             {{ lastResponse ? lastResponse.latencyMs : '—' }}
             <small v-if="lastResponse"> ms</small>
           </strong>
         </div>
         <div>
-          <span>路由置信度</span>
+          <span>{{ t('inspector.routingConfidence') }}</span>
           <strong>{{ lastResponse ? formatPercent(lastResponse.routingConfidence) : '—' }}</strong>
         </div>
       </div>
       <p v-if="lastResponse?.routingReason" class="routing-note">{{ lastResponse.routingReason }}</p>
       <details v-if="lastTrace?.trace" class="inspector-tools">
         <summary>
-          <span>工具调用</span>
+          <span>{{ t('inspector.toolCalls') }}</span>
           <span class="count-tag">{{ lastTrace.trace.toolCalls?.length || 0 }}</span>
           <AppIcon name="chevron" />
         </summary>
@@ -74,35 +74,35 @@
           </div>
           <pre>{{ formatJson(call.input || {}) }}</pre>
         </div>
-        <p v-if="!lastTrace.trace.toolCalls?.length" class="muted">{{ lastTrace.trace.toolsUsed?.length ? lastTrace.trace.toolsUsed.join(' · ') : '本次没有记录到工具输入。' }}</p>
+        <p v-if="!lastTrace.trace.toolCalls?.length" class="muted">{{ lastTrace.trace.toolsUsed?.length ? lastTrace.trace.toolsUsed.join(' · ') : t('inspector.noToolInput') }}</p>
       </details>
     </section>
     <section class="inspector-section">
       <div class="inspector-section-heading">
-        <h3>运行状态</h3>
-        <button class="icon-button" @click="$emit('refresh')" aria-label="刷新运行状态" title="刷新运行状态">
+        <h3>{{ t('inspector.runtimeStatus') }}</h3>
+        <button class="icon-button" @click="$emit('refresh')" :aria-label="t('inspector.refreshStatus')" :title="t('inspector.refreshStatus')">
           <AppIcon name="refresh" />
         </button>
       </div>
       <div class="runtime-metrics">
         <div>
-          <span>请求</span>
+          <span>{{ t('inspector.requests') }}</span>
           <strong>{{ monitorData.loaded ? totalRequests : '—' }}</strong>
         </div>
         <div>
-          <span>Agent</span>
+          <span>{{ t('inspector.agents') }}</span>
           <strong>{{ monitorData.loaded ? agentCount : '—' }}</strong>
         </div>
         <div>
-          <span>告警</span>
+          <span>{{ t('inspector.alerts') }}</span>
           <strong :class="{ danger: activeAlerts.length }">{{ monitorData.loaded ? activeAlerts.length : '—' }}</strong>
         </div>
       </div>
       <p v-if="activeAlerts.length" class="alert-note">
         <AppIcon name="alert" />
-        {{ activeAlerts[0].detail || activeAlerts[0].title }}
+        {{ activeAlerts[0].message || activeAlerts[0].detail || activeAlerts[0].title }}
       </p>
-      <p v-else class="runtime-note">{{ monitorData.loaded ? '当前没有活跃告警' : '连接服务后查看运行状态' }}</p>
+      <p v-else class="runtime-note">{{ monitorData.loaded ? t('inspector.noActiveAlerts') : t('inspector.connectToView') }}</p>
     </section>
   </div>
 </template>
@@ -110,6 +110,7 @@
 <script setup>
 import { computed } from 'vue'
 import AppIcon from './AppIcon.vue'
+import { t } from '../lib/i18n'
 
 const props = defineProps({
   lastResponse: { type: Object, default: null },

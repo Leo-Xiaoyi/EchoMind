@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 class IntentEmbedding:
     MODEL = 'BAAI/bge-m3'
     URL = 'https://api.siliconflow.cn/v1/embeddings'
+    MAX_TEMPLATE_CACHES = 4
 
     def __init__(self):
         self.key = os.getenv('SILICONFLOW_API_KEY', '').strip()
@@ -66,7 +67,9 @@ class IntentEmbedding:
                                 for key, group in snapshot.items():
                                     groups[key] = vectors[offset:offset+len(group)]
                                     offset += len(group)
-                                self.remote_templates = {fingerprint: groups}
+                                self.remote_templates[fingerprint] = groups
+                                while len(self.remote_templates) > self.MAX_TEMPLATE_CACHES:
+                                    self.remote_templates.pop(next(iter(self.remote_templates)))
                             groups = self.remote_templates[fingerprint]
                         query = (await self._request(client, [message]))[0]
                         if any(len(v) != len(query) for group in groups.values() for v in group):
@@ -85,7 +88,10 @@ class IntentEmbedding:
                 self.retry_at = time.monotonic() + 60
                 logger.warning('在线意图向量调用失败，回退本地 n-gram，冷却 60 秒：%s', self.last_error)
         if fingerprint not in self.local_templates:
-            self.local_templates = {fingerprint: {key: [local_embed(t) for t in group] for key, group in snapshot.items()}}
+            self.local_templates[fingerprint] = {
+                key: [local_embed(t) for t in group] for key, group in snapshot.items()}
+            while len(self.local_templates) > self.MAX_TEMPLATE_CACHES:
+                self.local_templates.pop(next(iter(self.local_templates)))
         query = local_embed(message)
         self.last_source = 'local-ngram'
         self.last_dimensions = len(query)

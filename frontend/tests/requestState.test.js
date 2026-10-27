@@ -29,6 +29,17 @@ test('latest request wins within each slot and request settings are snapshots', 
   assert.equal(fresh.isCurrent(), false)
 })
 
+test('changing locale invalidates in-flight requests and snapshots locale', () => {
+  const settings = { ...state(), locale: 'en' }
+  const requests = createRequestState(settings)
+  const old = requests.begin('chat')
+  settings.locale = 'zh-CN'
+  assert.equal(old.isCurrent(), false)
+  const fresh = requests.begin('chat')
+  assert.equal(fresh.settings.locale, 'zh-CN')
+  assert.equal(fresh.isCurrent(), true)
+})
+
 const source = fs.readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 function loadFunction(name, context) {
   const start = source.indexOf(`async function ${name}(`)
@@ -63,7 +74,8 @@ test('stale eval response does not clear a new operation busy state', async () =
   const settings=state(), requests=createRequestState(settings)
   let resolve
   const context=vm.createContext({settings, requestState:requests, busy:{value:false},evalData:{value:'new'},
-    statusText:{value:''}, showToast:()=>assert.fail('stale toast'), requestEvaluation:()=>new Promise(a=>{resolve=a})})
+    statusText:{value:''}, showToast:()=>assert.fail('stale toast'), t:(key)=>key,
+    requestEvaluation:()=>new Promise(a=>{resolve=a})})
   loadFunction('runEvaluation',context)
   const task=context.runEvaluation()
   settings.endpoints.python='/other'; requests.invalidate(); context.busy.value=true

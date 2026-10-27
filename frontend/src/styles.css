@@ -115,6 +115,11 @@ pre { margin: 10px 0 0; padding: 12px; background: var(--soft); border: 1px soli
 .page-breadcrumb strong { font-weight: 500; color: #54545e; }
 .mobile-brand { display: none; }
 .topbar-tools { display: flex; align-items: center; gap: 17px; }
+.language-switch { display: inline-flex; padding: 2px; border: 1px solid var(--line-strong); border-radius: 8px; background: white; }
+.language-switch button { min-height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 500; }
+.language-switch button:hover:not(:disabled) { background: var(--soft); color: var(--ink); }
+.language-switch button.active { background: #222225; color: white; }
+.language-switch button.active:hover:not(:disabled) { background: #222225; }
 .connection-status { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
 .connection-status i, .dialog-health i { width: 5px; height: 5px; border-radius: 50%; background: #b1b1b8; flex-shrink: 0; }
 .connection-status .online, .dialog-health .online { background: var(--success); }
@@ -430,6 +435,7 @@ summary::-webkit-details-marker { display: none; }
   .topbar { padding-inline: 17px; }
   .mobile-brand { gap: 7px; font-size: 17px; }
   .topbar-tools { gap: 6px; }
+  .language-switch button { padding: 0 7px; font-size: 10px; }
   .chat-toolbar { padding-inline: 17px; }
   .conversation { padding-inline: 17px; }
   .welcome h1 { font-size: 26px; }

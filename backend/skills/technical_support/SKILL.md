@@ -1,7 +1,7 @@
 ---
 name: 技术支持处理规范
 description: 适用于 EchoMind TechnicalAgent 的故障排查、错误诊断、配置指导、接口接入和升级处理规范
-keywords: 报错,错误,异常,崩溃,卡顿,无法登录,登录失败,接口,API,SDK,配置,部署,连接失败,超时,500,401,403,404,回调,webhook,日志,数据库,缓存
+keywords: 报错,错误,异常,崩溃,卡顿,无法登录,登录失败,接口,API,SDK,配置,部署,连接失败,超时,500,401,403,404,回调,webhook,日志,数据库,缓存,error,errors,exception,crash,freeze,login failure,cannot log in,configuration,deployment,connection failure,timeout,callback,logs,database,cache
 agents: technical
 enabled: true
 ---

@@ -43,7 +43,7 @@ async def main():
         class Orchestrator:
             def get_tool_trace(self, request_id):
                 return None
-            async def recognize_intent(self, message, history=None):
+            async def recognize_intent(self, message, history=None, locale=None):
                 contexts.append((message, history))
                 return SimpleNamespace(intent=IntentCategory.REQUEST, intent_group='general',
                                        urgency=None, confidence=1.0, entities={}, source_scores={})

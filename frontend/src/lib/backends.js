@@ -3,18 +3,21 @@ const DEFAULT_BACKENDS = {
   python: {
     id: 'python',
     label: 'Python',
-    baseUrl: runtimeConfig().pythonApiUrl || import.meta.env.VITE_PYTHON_API_URL || '/api/python',
+    baseUrl: runtimeConfig().pythonApiUrl || import.meta.env?.VITE_PYTHON_API_URL || '/api/python',
     port: '8000'
   }
 }
 
 export function createInitialSettings() {
   const saved = readSettings()
+  const savedLocale = saved.locale === 'zh-CN' || saved.locale === 'en' ? saved.locale : null
   return {
     pythonToken: '',
     backend: 'python',
     userId: saved.userId || 'u1001',
-    conversationId: saved.conversationId || '',
+    // 没有保存过语言的旧设置按新访客处理：默认英文并开始新会话，避免旧中文历史驱动英文回复。
+    conversationId: savedLocale ? (saved.conversationId || '') : '',
+    locale: savedLocale || 'en',
     endpoints: {
       python: saved.endpoints?.python || DEFAULT_BACKENDS.python.baseUrl
     }
@@ -38,7 +41,7 @@ export async function requestHealth(type, settings) {
 }
 
 export async function requestMonitor(type, settings) {
-  return requestFor(type, settings, '/monitor')
+  return requestFor(type, settings, `/monitor?locale=${encodeURIComponent(settingsLocale(settings))}`)
 }
 
 export async function requestSkills(type, settings) {
@@ -53,8 +56,12 @@ export async function requestKnowledgeStats(type, settings) {
   return requestFor(type, settings, '/knowledge/stats')
 }
 
+export function evaluationTaskKey(type, settings) {
+  return `echomind.eval:${type}:${backendMeta(type, settings).baseUrl}:${settings.userId}:${settingsLocale(settings)}`
+}
+
 export async function runEvaluation(type, settings, body = null, options = {}) {
-  const taskKey = `echomind.eval:${type}:${backendMeta(type, settings).baseUrl}:${settings.userId}`
+  const taskKey = evaluationTaskKey(type, settings)
   const savedJob = sessionStorage.getItem(taskKey)
   const initial = savedJob ? {job_id: savedJob, status: 'queued', completed: 0, total: 0} : await requestFor(type, settings, '/eval/run', {
     method: 'POST',
@@ -75,14 +82,19 @@ export async function runEvaluation(type, settings, body = null, options = {}) {
 }
 
 export async function requestSearch(type, settings, query, topK = 5) {
-  const params = new URLSearchParams({ query, top_k: String(topK) })
+  const params = new URLSearchParams({ query, top_k: String(topK), locale: settingsLocale(settings) })
   return requestFor(type, settings, `/search?${params}`, { method: 'POST' })
 }
 
-export async function requestChat(type, settings, message) {
+export function chatAttemptKey(type, settings, message) {
   const meta = backendMeta(type, settings)
+  return JSON.stringify([type, meta.baseUrl, settings.userId, settings.conversationId,
+    settingsLocale(settings), message])
+}
+
+export async function requestChat(type, settings, message) {
   const payload = buildChatPayload(type, settings, message)
-  const attemptKey = JSON.stringify([type, meta.baseUrl, settings.userId, settings.conversationId, message])
+  const attemptKey = chatAttemptKey(type, settings, message)
   if (!chatAttempts.has(attemptKey)) {
     if (chatAttempts.size > 100) chatAttempts.clear()
     chatAttempts.set(attemptKey, crypto.randomUUID())
@@ -94,7 +106,7 @@ export async function requestChat(type, settings, message) {
     body: JSON.stringify(payload)
   })
   chatAttempts.delete(attemptKey)
-  return normalizeChatResponse(type, raw)
+  return normalizeChatResponse(type, raw, settings)
 }
 
 export async function requestToolTrace(type, settings, requestId) {
@@ -124,13 +136,19 @@ function buildChatPayload(type, settings, message) {
   return {
     message,
     user_id: settings.userId || 'anonymous',
-    conv_id: settings.conversationId || undefined
+    conv_id: settings.conversationId || undefined,
+    locale: settingsLocale(settings)
   }
 }
 
-function normalizeChatResponse(type, raw) {
+function settingsLocale(settings) {
+  return settings.locale === 'zh-CN' ? 'zh-CN' : 'en'
+}
+
+export function normalizeChatResponse(type, raw, settings = {}) {
   return {
     backend: type,
+    locale: raw.locale || settingsLocale(settings),
     conversationId: raw.conversation_id || raw.conversationId || raw.conv_id || '',
     requestId: raw.request_id || raw.requestId || '',
     response: raw.response || '',

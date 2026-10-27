@@ -142,7 +142,7 @@ def test_agent_tool_scopes_are_real_and_isolated():
 
 def test_shared_rag_tool_is_available_to_all_agents():
     class RagManager:
-        async def search_with_rewrite(self, tool_name, query, top_k=5):
+        async def search_with_rewrite(self, tool_name, query, top_k=5, locale=None):
             return type(
                 "Result",
                 (),

@@ -154,8 +154,11 @@ class MemoryManager:
         raw = await self._redis.get(self.receipt_key(user_id, conv_id, request_id))
         return json.loads(raw) if raw else None
 
-    async def commit_turn(self, user_id, conv_id, request_id, message, response, trace=None, *, state=None):
-        """原子保存一整轮及响应回执；由 conversation 锁保护。"""
+    async def commit_turn(self, user_id, conv_id, request_id, message, response, trace=None, *, state=None, locale=None):
+        """原子保存一整轮及响应回执；由 conversation 锁保护。
+
+        locale 参与回执身份校验：相同 client_request_id 不能跨语言复用旧响应。
+        """
         await self._migrate_legacy_keys(user_id, conv_id)
         def raw(role, content):
             return json.dumps({"role": role, "content": self._safe_text(content),
@@ -168,7 +171,8 @@ class MemoryManager:
                 if state is not None:
                     pipe.setex(self._state_key(user_id, conv_id), 86400, json.dumps(state))
             pipe.setex(self.receipt_key(user_id, conv_id, request_id), 86400,
-                        json.dumps({"message": message, "response": response}))
+                        json.dumps({"message": message, "response": response,
+                                    "locale": locale or response.get("locale")}))
             if trace:
                 from core.redaction import redact
                 encoded_trace = json.dumps(redact(trace))
