@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1280" viewBox="0 0 1440 1280" role="img" aria-labelledby="title desc">
+<title id="title">EchoMind 请求处理流程</title><desc id="desc">用户请求经接口、上下文和意图识别进入路由；Agent 按需使用工具，也可澄清或转人工。</desc>
+<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#f5f8fc"/><stop offset="1" stop-color="#eaf1f8"/></linearGradient><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9Z" fill="#8295ab"/></marker></defs>
+<rect width="1440" height="1280" rx="28" fill="url(#bg)"/>
+<g font-family="Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+<text x="72" y="90" font-size="17" font-weight="700" letter-spacing="3" fill="#288f92">ECHOMIND  /  请求处理流程</text>
+<text x="72" y="147" font-size="48" font-weight="750" fill="#172b45">从用户问题到最终回复</text>
+<text x="72" y="187" font-size="21" fill="#587087">意图识别、Agent 编排与按需工具调用</text>
+<rect x="56" y="222" width="1328" height="754" rx="24" fill="#fff" stroke="#dae5ef"/>
+<text x="88" y="270" font-size="14" font-weight="700" letter-spacing="2" fill="#7a8fa3">请求主链路</text>
+<!-- entry -->
+<rect x="88" y="292" width="262" height="108" rx="16" fill="#e9f7f5" stroke="#b9e5df"/><text x="110" y="328" font-size="14" font-weight="700" fill="#22847d">01  输入</text><text x="110" y="358" font-size="21" font-weight="700" fill="#193448">用户消息</text><text x="110" y="383" font-size="15" fill="#587087">Vue 界面或 HTTP 客户端</text>
+<rect x="416" y="292" width="278" height="108" rx="16" fill="#f2f6fb" stroke="#d5e1ec"/><text x="438" y="328" font-size="14" font-weight="700" fill="#55769a">02  请求保护</text><text x="438" y="358" font-size="21" font-weight="700" fill="#193448">FastAPI /chat</text><text x="438" y="383" font-size="15" fill="#587087">身份 · 重试回执 · 会话锁</text>
+<rect x="760" y="292" width="274" height="108" rx="16" fill="#f2f6fb" stroke="#d5e1ec"/><text x="782" y="328" font-size="14" font-weight="700" fill="#55769a">03  上下文</text><text x="782" y="358" font-size="21" font-weight="700" fill="#193448">加载会话</text><text x="782" y="383" font-size="15" fill="#587087">近期消息 · 相关记忆</text>
+<rect x="1100" y="292" width="250" height="108" rx="16" fill="#edf2ff" stroke="#d7dffc"/><text x="1122" y="328" font-size="14" font-weight="700" fill="#6078c1">04  理解</text><text x="1122" y="358" font-size="21" font-weight="700" fill="#193448">意图与实体</text><text x="1122" y="383" font-size="15" fill="#587087">LLM + 向量相似度 + 规则</text>
+<g fill="none" stroke="#8295ab" stroke-width="2.5" marker-end="url(#arrow)"><path d="M350 346H407"/><path d="M694 346H751"/><path d="M1034 346H1091"/><path d="M1225 400V435H719V467"/></g>
+<rect x="501" y="472" width="436" height="85" rx="16" fill="#243e60"/><text x="719" y="507" text-anchor="middle" font-size="14" font-weight="700" letter-spacing="1" fill="#8be0d1">05  请求路由</text><text x="719" y="536" text-anchor="middle" font-size="20" font-weight="700" fill="#fff">根据意图和上下文选择处理路径</text>
+<g fill="none" stroke="#8295ab" stroke-width="2.5" marker-end="url(#arrow)"><path d="M580 557V583H264V608"/><path d="M719 557V608"/><path d="M858 557V583H1172V608"/></g>
+<rect x="88" y="614" width="352" height="115" rx="16" fill="#f5f8fd" stroke="#d9e4f0"/><text x="110" y="648" font-size="19" font-weight="700" fill="#193448">单 Agent</text><text x="110" y="675" font-size="15" fill="#587087">General、Technical 或 Billing</text><text x="110" y="700" font-size="15" fill="#587087">处理相应请求</text>
+<rect x="484" y="614" width="470" height="115" rx="16" fill="#eef7f7" stroke="#c8e7e3"/><text x="506" y="648" font-size="19" font-weight="700" fill="#193448">主辅 Agent 协作</text><text x="506" y="675" font-size="15" fill="#587087">主 Agent 与辅助 Agent 并行处理</text><text x="506" y="700" font-size="15" fill="#587087">Response Composer 合成回复</text>
+<rect x="998" y="614" width="352" height="115" rx="16" fill="#fbf5eb" stroke="#efdfc8"/><text x="1020" y="648" font-size="19" font-weight="700" fill="#193448">澄清或转人工</text><text x="1020" y="675" font-size="15" fill="#587087">意图不明确时追问，或准备</text><text x="1020" y="700" font-size="15" fill="#587087">人工交接摘要</text>
+<path d="M264 729V765H1174V729 M719 729V765" fill="none" stroke="#8295ab" stroke-width="2.5"/><path d="M1130 765V808" fill="none" stroke="#8295ab" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="842" y="818" width="508" height="115" rx="16" fill="#e9f7f5" stroke="#b9e5df"/><text x="864" y="852" font-size="14" font-weight="700" fill="#22847d">06  回复</text><text x="864" y="881" font-size="20" font-weight="700" fill="#193448">保存本轮消息并返回回复</text><text x="864" y="907" font-size="15" fill="#587087">Redis 记录会话及重试回执</text>
+<rect x="88" y="813" width="687" height="125" rx="16" fill="#f8fafc" stroke="#d9e4f0" stroke-dasharray="6 5"/><text x="110" y="847" font-size="14" font-weight="700" fill="#607c98">AGENT 可按需使用</text><text x="110" y="878" font-size="18" font-weight="700" fill="#193448">Skills  ·  本地工具  ·  知识库 / RAG  ·  MCP</text><text x="110" y="905" font-size="15" fill="#587087">工具执行受角色权限与参数校验约束</text>
+<path d="M433 813V749" fill="none" stroke="#8fa4b8" stroke-width="2" stroke-dasharray="5 5"/>
+<text x="72" y="1029" font-size="14" font-weight="700" letter-spacing="2" fill="#7a8fa3">支撑能力</text>
+<rect x="72" y="1050" width="402" height="140" rx="16" fill="#fff" stroke="#dae5ef"/><text x="96" y="1088" font-size="19" font-weight="700" fill="#193448">Redis</text><text x="96" y="1117" font-size="15" fill="#587087">近期对话、任务状态、会话锁</text><text x="96" y="1140" font-size="15" fill="#587087">与重试回执</text>
+<rect x="496" y="1050" width="402" height="140" rx="16" fill="#fff" stroke="#dae5ef"/><text x="520" y="1088" font-size="19" font-weight="700" fill="#193448">ChromaDB</text><text x="520" y="1117" font-size="15" fill="#587087">共享知识、可检索的历史情景</text><text x="520" y="1140" font-size="15" fill="#587087">与用户画像</text>
+<rect x="920" y="1050" width="448" height="140" rx="16" fill="#fff" stroke="#dae5ef"/><text x="944" y="1088" font-size="19" font-weight="700" fill="#193448">监控与评测</text><text x="944" y="1117" font-size="15" fill="#587087">通过轨迹、指标与评测检查运行</text><text x="944" y="1140" font-size="15" fill="#587087">并观察改动后的表现</text>
+<text x="72" y="1240" font-size="14" fill="#788da1">长期记忆在本轮处理完成后于后台维护。</text><text x="1368" y="1240" text-anchor="end" font-size="14" font-weight="700" fill="#96a9b9">ECHOMIND</text>
+</g></svg>

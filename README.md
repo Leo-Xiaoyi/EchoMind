@@ -37,21 +37,7 @@ Invalid locale values are rejected with a `400` response. Omitting `locale` pres
 
 ## How a request moves
 
-```mermaid
-flowchart LR
-    UI["Vue / HTTP client"] --> API["FastAPI /chat"]
-    API --> G["Identity, receipt and conversation lock"]
-    G --> M["Redis + ChromaDB context"]
-    M --> I["LLM + embedding + pattern intent"]
-    I --> R["Agent routing"]
-    R --> A["Primary / supporting agents"]
-    A --> T["Skills, local tools, RAG, permitted MCP"]
-    T --> C["Response composition"]
-    C --> W["Redis turn + receipt"]
-    W --> UI
-    C -.-> L["Background memory maintenance"]
-    API -.-> O["Traces, metrics and evaluation"]
-```
+![EchoMind request flow](docs/images/request-flow.en.svg)
 
 The API checks identity, request reuse, and conversation order before reading recent messages and relevant longer-term context. Intent recognition supplies structured input for routing. The chosen role then decides whether it needs a local tool, shared knowledge, or a permitted external MCP tool. The reply and request receipt are committed together; longer-term memory maintenance follows in the background.
 

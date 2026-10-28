@@ -43,21 +43,7 @@ Vue 界面默认使用**英文**，新访客可随时切换到**中文**；选�
 
 ## 一条请求如何处理
 
-```mermaid
-flowchart LR
-    UI["Vue / HTTP 客户端"] --> API["FastAPI /chat"]
-    API --> G["身份、重试回执与会话锁"]
-    G --> M["Redis + ChromaDB 上下文"]
-    M --> I["LLM + Embedding + Pattern"]
-    I --> R["Agent 路由"]
-    R --> A["主 Agent / 辅助 Agent"]
-    A --> T["Skills、本地工具、RAG、获准的 MCP 工具"]
-    T --> C["回复合成"]
-    C --> W["Redis 提交消息与回执"]
-    W --> UI
-    C -.-> L["后台维护长期记忆"]
-    API -.-> O["轨迹、指标与评测"]
-```
+![EchoMind 请求处理流程](docs/images/request-flow.zh-CN.svg)
 
 入口先确认身份、会话顺序及是否为重复请求，再读取近期消息与相关长期记忆。意图识别把问题变成路由所需的结构化信息；路由器选择单个 Agent、主辅协作、澄清或升级。Agent 执行期间可以按需调用工具，完成后将回复与本轮消息一起提交，并留下可查询的回执和轨迹。
 
