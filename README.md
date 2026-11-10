@@ -12,17 +12,13 @@ The included policies and customer examples are illustrative. EchoMind can colle
 
 In development mode, an empty knowledge base can be seeded with six clearly labeled fictional policies so the retrieval flow is ready to explore. Set `ECHOMIND_SEED_DEMO_DOCS=false` to start with an empty collection. Production mode does not seed these documents.
 
-## Language
+## English and Chinese support
 
-The Vue interface defaults to **English** for a new visitor and can switch to **中文** at any time. The choice is stored in the browser and survives a refresh. Navigation, forms, examples, empty states, and the evaluation, monitor, and trace labels come from one frontend dictionary. Errors returned by the backend may keep their original detail for diagnosis; the surrounding status is localized.
+EchoMind supports English and Chinese interfaces and conversation replies. The interface defaults to English, and the browser remembers your language choice.
 
-`POST /chat` accepts an optional `locale` of `en` or `zh-CN`, defaulting to `zh-CN` for existing clients. The selection is passed to the Agent as an output-language requirement for the final user-facing reply, including single-agent, composed, escalation, clarification, and failure replies. This is a runtime instruction, not a model-independent guarantee; validate the actual reply language with your configured model provider. English questions use a small set of English intent examples and keywords, but still rely on the existing Chinese Skills, routing rules, and knowledge base. When an English query needs retrieval, the query rewrite can produce Chinese sub-queries so it can find the Chinese demo policies; if the rewrite model is unavailable, a small English-to-Chinese term map (for example address → 地址) is used only as a recall fallback. These retrieval paths do not translate stored documents; the Agent still writes the final reply in the selected language. Deploy the frontend and backend together: an older backend ignores the optional `locale` fields and returns Chinese, so a new English UI could otherwise appear to receive Chinese replies.
+The selected language applies to interface text and Agent replies, including composed answers, clarification, handoff and failure messages. English questions can retrieve information from the existing Chinese knowledge base through query rewriting, with the Agent writing the answer in the selected language.
 
-Not everything is translated. Machine fields (`intent`, `agent_type`, `status`, `error_code`, tool names, metric names), Skill names and bodies, knowledge excerpts shown in search, uploaded documents, external MCP text, and the built-in evaluation cases, Judge, and baselines remain in their original form. Switching language in the UI starts a new conversation so that previous-language history does not drive the new reply; existing server-side conversations, user profiles, and knowledge are not deleted. If a browser has a saved conversation but no saved language (for example, from an older version), the UI also starts a new conversation so the first reply uses the selected language.
-
-Cross-language retrieval is relevance-based: a smaller `top_k` may omit useful excerpts, and result order can vary. The application does not treat a retrieved excerpt as proof that an account, order, or payment action occurred.
-
-Invalid locale values are rejected with a `400` response. Omitting `locale` preserves the original Chinese behavior.
+Switching languages starts a new conversation. Existing server-side records and knowledge remain available. Documents, Skills and evaluation materials stay in their original language; see [language configuration](#language-configuration) for details.
 
 ## At a glance
 
@@ -143,6 +139,44 @@ The [Skills guide](backend/skills/README.md) shows the file format and reload en
 | `ECHOMIND_ENV`, `ECHOMIND_API_TOKENS` | Local development mode or application access tokens for deployment |
 
 Compose binds its published ports to `127.0.0.1` by default. Access from other machines calls for HTTPS and application tokens. The current knowledge base is shared: user-separated conversations do not imply tenant-separated documents. One application process is the recommended deployment because evaluation jobs, some routing state, and caches are held in process memory.
+
+### Language configuration
+
+<details>
+<summary>API parameters, knowledge retrieval and conversation handling</summary>
+
+#### API parameters
+
+`POST /chat` accepts an optional `locale`:
+
+| Value | Purpose |
+| --- | --- |
+| `en` | Request an English reply |
+| `zh-CN` | Request a Chinese reply; also the API default |
+
+Omitting `locale` preserves the original Chinese behavior. Unsupported values return HTTP `400`. `POST /search` also accepts `locale` for cross-language query rewriting. On `GET /monitor`, it controls fixed feedback text.
+
+Deploy the frontend and backend together. An older backend may ignore the language parameter and return Chinese replies to an English interface. Reply language is controlled through model instructions, so adherence depends on the configured model.
+
+#### Knowledge retrieval and content scope
+
+English input uses a small set of English intent examples and keywords alongside the existing Chinese Skills, routing rules and knowledge base. Query rewriting can produce Chinese subqueries for retrieval. If the rewrite service is unavailable, a limited English-to-Chinese term map helps with recall. Neither path translates or duplicates the stored documents.
+
+Retrieval is relevance-based: result order can vary, and a smaller `top_k` may omit useful excerpts.
+
+These items stay in their original form:
+
+- Machine fields such as intent, status, tool names and metric names.
+- Skill names and bodies, knowledge excerpts, uploaded documents and external MCP results.
+- Built-in Chinese evaluation cases, Judge prompts and regression baselines.
+
+Changing the interface language does not create a separate English evaluation suite. Some backend error details also remain in their original language for diagnosis; the surrounding status text follows the selected language.
+
+#### Conversation handling
+
+Switching languages starts a new conversation without deleting existing conversations, user profiles or knowledge. After an upgrade, a browser with a saved conversation but no language setting also starts a new conversation so subsequent requests use the current language choice.
+
+</details>
 
 ## Repository map
 
